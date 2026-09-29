@@ -121,28 +121,8 @@ st.markdown(
 
 headers = {"Authorization": f"Bearer {st.session_state.frameio_access_token}"}
 
-
-def api_get(path: str, params: dict | None = None) -> requests.Response:
-    return requests.get(
-        f"{FRAMEIO_BASE_URL}{path}",
-        headers=headers,
-        params=params,
-        timeout=45,
-    )
-
-
-def rows_from_payload(payload):
-    if isinstance(payload, dict):
-        rows = payload.get("data")
-        if isinstance(rows, list):
-            return rows
-    if isinstance(payload, list):
-        return payload
-    return []
-
-
-me_response = api_get("/me")
-accounts_response = api_get("/accounts", {"page_size": 100})
+me_response = requests.get(f"{FRAMEIO_BASE_URL}/me", headers=headers, timeout=45)
+accounts_response = requests.get(f"{FRAMEIO_BASE_URL}/accounts", headers=headers, timeout=45)
 
 if not (me_response.ok and accounts_response.ok):
     st.error(
@@ -153,88 +133,74 @@ if not (me_response.ok and accounts_response.ok):
 
 me_payload = me_response.json()
 accounts_payload = accounts_response.json()
-
 me_data = me_payload.get("data", me_payload) if isinstance(me_payload, dict) else {}
-account_rows = rows_from_payload(accounts_payload)
+
+if isinstance(accounts_payload, dict):
+    account_rows = accounts_payload.get("data") or accounts_payload.get("accounts") or []
+else:
+    account_rows = accounts_payload if isinstance(accounts_payload, list) else []
 
 st.success("Frame.io connection successful.")
 st.write(f"Authenticated user: **{me_data.get('name', 'Available')}**")
 st.write(f"Accessible Frame.io accounts: **{len(account_rows)}**")
 
-if not account_rows:
-    st.error("No Frame.io accounts were returned for this user.")
-    st.stop()
-
-account_labels = {
-    (row.get("display_name") or row.get("name") or f"Account {idx + 1}"): row
-    for idx, row in enumerate(account_rows)
-}
-selected_account_label = st.selectbox(
-    "Frame.io account",
-    list(account_labels.keys()),
-)
-selected_account = account_labels[selected_account_label]
-account_id = selected_account.get("id")
-
-workspaces_response = api_get(
-    f"/accounts/{account_id}/workspaces",
-    {"page_size": 100, "include_total_count": "true"},
+st.subheader("Direct review-link test")
+st.write(
+    "For this milestone, paste one Frame.io Review Link from the Monday board. "
+    "We will use the link itself as the source of truth; no project/workspace browsing is required."
 )
 
-if not workspaces_response.ok:
-    st.error(
-        "Could not list Frame.io workspaces for the selected account. "
-        f"HTTP {workspaces_response.status_code}"
-    )
-    st.stop()
+review_link = st.text_input(
+    "Frame.io Review Link",
+    placeholder="https://f.io/...",
+)
 
-workspace_rows = rows_from_payload(workspaces_response.json())
-st.write(f"Accessible workspaces in selected account: **{len(workspace_rows)}**")
+if st.button("Resolve review link", type="primary", disabled=not review_link):
+    from urllib.parse import urlparse
+    import re
 
-if not workspace_rows:
-    st.warning("No workspaces are accessible in this account.")
-else:
-    workspace_labels = {
-        (row.get("name") or f"Workspace {idx + 1}"): row
-        for idx, row in enumerate(workspace_rows)
-    }
-    selected_workspace_label = st.selectbox(
-        "Workspace",
-        list(workspace_labels.keys()),
-    )
-    selected_workspace = workspace_labels[selected_workspace_label]
-    workspace_id = selected_workspace.get("id")
+    parsed = urlparse(review_link.strip())
+    allowed_hosts = {"f.io", "www.f.io", "frame.io", "www.frame.io", "next.frame.io"}
 
-    projects_response = api_get(
-        f"/accounts/{account_id}/workspaces/{workspace_id}/projects",
-        {"page_size": 100, "include_total_count": "true", "sort": "name_asc"},
-    )
-
-    if not projects_response.ok:
-        st.error(
-            "Could not list projects for the selected workspace. "
-            f"HTTP {projects_response.status_code}"
-        )
+    if parsed.scheme != "https" or parsed.hostname not in allowed_hosts:
+        st.error("Please enter an HTTPS Frame.io / f.io review link.")
     else:
-        project_rows = rows_from_payload(projects_response.json())
-        st.write(f"Projects visible in selected workspace: **{len(project_rows)}**")
+        try:
+            response = requests.get(
+                review_link.strip(),
+                allow_redirects=True,
+                timeout=30,
+            )
+            final_url = response.url
+            final_parsed = urlparse(final_url)
 
-        if project_rows:
-            project_names = [
-                row.get("name") or f"Project {idx + 1}"
-                for idx, row in enumerate(project_rows)
-            ]
-            selected_project_name = st.selectbox(
-                "Project access check",
-                project_names,
+            st.write(f"Link resolution HTTP status: **{response.status_code}**")
+            st.write(f"Resolved host: **{final_parsed.hostname or 'Unknown'}**")
+            st.write(f"Resolved path: **{final_parsed.path or '/'}**")
+
+            uuid_candidates = re.findall(
+                r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+                r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b",
+                final_url,
             )
-            st.success(f"Project access confirmed: {selected_project_name}")
-            st.caption(
-                "Next milestone: use a real Monday Frame.io review link to resolve the "
-                "linked asset, inspect its version stack, and extract comments read-only."
-            )
-        else:
-            st.warning("No projects are visible in this workspace.")
+
+            if uuid_candidates:
+                st.success(
+                    f"Resolved link contains {len(set(uuid_candidates))} Frame.io-style UUID candidate(s)."
+                )
+            else:
+                st.info(
+                    "The short link resolved, but no asset UUID was visible in the URL. "
+                    "That is still useful: the next step will use the resolved page/share metadata "
+                    "to identify the linked asset."
+                )
+        except requests.RequestException as exc:
+            st.error(f"Could not resolve the review link: {exc}")
+
+st.caption(
+    "This is a temporary diagnostic step. Final production flow will read these links "
+    "directly from Monday for the selected month."
+)
 
 if st.button("Disconnect Frame.io"):
     st.session_state.frameio_access_token = None
