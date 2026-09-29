@@ -29,7 +29,12 @@ class FrameIOClient:
         self.session.headers.update({"Authorization": f"Bearer {access_token}"})
 
     def _request(self, method: str, path: str, *, params: Any = None, json_body: dict[str, Any] | None = None, experimental: bool = False, retry: int = 3) -> requests.Response:
-        url = path if path.startswith("http") else f"{FRAMEIO_BASE_URL}{path}"
+        if path.startswith("http"):
+            url = path
+        elif path.startswith("/v4/"):
+            url = f"https://api.frame.io{path}"
+        else:
+            url = f"{FRAMEIO_BASE_URL}{path}"
         headers = {"api-version": "experimental"} if experimental else None
         last: requests.Response | None = None
         for attempt in range(retry):
