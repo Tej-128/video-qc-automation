@@ -1,0 +1,44 @@
+name: Monday Read-Only Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      sample_limit:
+        description: "Number of board rows to inspect (1-100)"
+        required: true
+        default: "10"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Monday read-only audit
+        env:
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+          MONDAY_BOARD_ID: "1662638864"
+          MONDAY_SAMPLE_LIMIT: ${{ inputs.sample_limit }}
+        run: python src/monday_audit.py
+
+      - name: Upload audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: monday-board-audit
+          path: artifacts/monday_board_audit.json
+          if-no-files-found: error
+          retention-days: 7
