@@ -271,7 +271,19 @@ class FrameIOClient:
         params: Any = [("page_size", 100), ("include", "owner"), ("include", "replies"), ("sort", "created_at_asc"), ("timestamp_as_timecode", "true")]
         response = self._request("GET", path, params=params)
         if response.status_code in (400, 422):
-            response = self._request("GET", path, params={"page_size": 100, "sort": "created_at_asc", "timestamp_as_timecode": "true"})
+            # Some API deployments accept only one include enum at a time.
+            # Replies are more important than expanded owner metadata because the
+            # workflow must analyze every QC comment/reply.
+            response = self._request(
+                "GET",
+                path,
+                params={
+                    "page_size": 100,
+                    "include": "replies",
+                    "sort": "created_at_asc",
+                    "timestamp_as_timecode": "true",
+                },
+            )
         response.raise_for_status()
         payload = response.json()
         rows = self._rows(payload)
@@ -294,7 +306,7 @@ class FrameIOClient:
             owner = comment.get("owner")
             if isinstance(owner, dict):
                 return str(owner.get("name") or owner.get("email") or "")
-            return str(comment.get("owner_name") or "")
+            return str(comment.get("owner_name") or comment.get("owner_id") or "")
 
         def add(comment: dict[str, Any], is_reply: bool, parent_id: str = "") -> None:
             text = str(comment.get("text") or "").strip()
