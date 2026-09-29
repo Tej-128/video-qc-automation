@@ -1,25 +1,39 @@
 # Video QC Automation
 
-Read-only-first automation for generating monthly Video QC reports from Monday.com, Frame.io, and OpenAI.
+Production-oriented monthly QC reporting for JoVE Video Production.
 
-## Current milestone
+## Flow
 
-**Phase 1: Monday.com read-only extraction**
+**Streamlit → Monday.com → Frame.io → OpenAI → 2 Excel reports**
 
-The first workflow only reads board metadata and sample rows from Monday.com board `1662638864`. It does not create, update, or delete Monday.com data.
+1. Select report month/year.
+2. Read the monthly project population from Monday board `1662638864`.
+3. Use each row's existing `frame.io Review Link` as the primary asset mapping.
+4. Resolve the corresponding Frame.io version stack under **Projects for Review**.
+5. Exclude Version 1 and the final/latest version; extract comments from every intermediate version.
+6. Classify atomic QC errors with OpenAI into the approved scripting/video-editing categories.
+7. Attribute scripting errors to the Monday Scriptwriter; flag ambiguous video-editor handovers for manual review.
+8. Generate separate Scripting QC and Video Editing QC Excel workbooks.
+
+## Output
+
+- `YYYY_MM_Scripting_QC.xlsx`
+- `YYYY_MM_Video_Editing_QC.xlsx`
+
+Each workbook contains article-level QC, contributor summaries/trends, editable manual overrides, a Needs Review sheet, an analysis guide, and a hidden raw-comment audit sheet.
+
+## Streamlit secrets
+
+These values must be configured in Streamlit Community Cloud and must never be committed:
+
+- `FRAMEIO_CLIENT_ID`
+- `FRAMEIO_CLIENT_SECRET`
+- `MONDAY_API_TOKEN`
+- `OPENAI_API_KEY`
+- Optional: `OPENAI_MODEL` (defaults to `gpt-5.6-terra`)
 
 ## Security
 
-This repository is public. Never commit API keys, access tokens, Frame.io credentials, OpenAI keys, QC source data, or generated production reports.
+This repository is public, so it contains code only. Production credentials, Frame.io tokens, Monday data, QC comments, generated reports, and internal spreadsheets must not be committed or uploaded as public GitHub Actions artifacts.
 
-Secrets belong in GitHub Actions / Streamlit secrets only.
-
-## Planned flow
-
-Monday.com -> Frame.io review link -> version/comment extraction -> QC classification -> contributor attribution -> two Excel reports.
-
-## Required GitHub secret for Phase 1
-
-- `MONDAY_API_TOKEN`
-
-The remaining secrets will be added only when those integrations are built.
+The production workflow is read-only against Monday.com and Frame.io.
