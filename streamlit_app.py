@@ -11,7 +11,7 @@ ADOBE_AUTHORIZE_URL = "https://ims-na1.adobelogin.com/ims/authorize/v2"
 ADOBE_TOKEN_URL = "https://ims-na1.adobelogin.com/ims/token/v3"
 FRAMEIO_BASE_URL = "https://api.frame.io/v4"
 REDIRECT_URI = "https://video-qc-automation-abmjs82sxu76zjmt26beda.streamlit.app"
-SCOPES = "openid,email,profile,additional_info.roles"
+SCOPES = "offline_access,openid,email,profile,additional_info.roles"
 
 st.set_page_config(
     page_title="Video QC Automation",
