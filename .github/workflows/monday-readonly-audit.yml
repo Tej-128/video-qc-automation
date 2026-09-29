@@ -34,11 +34,3 @@ jobs:
           MONDAY_BOARD_ID: "1662638864"
           MONDAY_SAMPLE_LIMIT: ${{ inputs.sample_limit }}
         run: python src/monday_audit.py
-
-      - name: Upload audit artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: monday-board-audit
-          path: artifacts/monday_board_audit.json
-          if-no-files-found: error
-          retention-days: 7
