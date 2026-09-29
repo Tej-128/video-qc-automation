@@ -22,24 +22,22 @@ st.set_page_config(
 st.title("Video QC Automation")
 st.caption("Monthly QC report automation for Monday.com + Frame.io + OpenAI")
 
-st.markdown(
-    """
-### Current build stage
-- Monday.com connectivity: **validated**
-- Monthly project selection: **validated**
-- Frame.io OAuth: **ready for credential setup**
-- QC classification: **not connected yet**
-- Excel report generation: **not connected yet**
-"""
-)
-
 client_id = st.secrets.get("FRAMEIO_CLIENT_ID", "")
 client_secret = st.secrets.get("FRAMEIO_CLIENT_SECRET", "")
 
 if not client_id or not client_secret:
+    st.markdown(
+        """
+### Current build stage
+- Monday.com connectivity: **validated**
+- Monthly project selection: **validated**
+- Frame.io OAuth: **waiting for Streamlit credentials**
+- QC classification: **not connected yet**
+- Excel report generation: **not connected yet**
+"""
+    )
     st.info(
-        "Frame.io OAuth is ready in code. Add FRAMEIO_CLIENT_ID and "
-        "FRAMEIO_CLIENT_SECRET in Streamlit Secrets after creating the Adobe OAuth Web App credential."
+        "Add FRAMEIO_CLIENT_ID and FRAMEIO_CLIENT_SECRET in Streamlit Secrets."
     )
     st.stop()
 
@@ -80,6 +78,17 @@ if code and not st.session_state.frameio_access_token:
     st.rerun()
 
 if not st.session_state.frameio_access_token:
+    st.markdown(
+        """
+### Current build stage
+- Monday.com connectivity: **validated**
+- Monthly project selection: **validated**
+- Frame.io OAuth: **ready to connect**
+- QC classification: **not connected yet**
+- Excel report generation: **not connected yet**
+"""
+    )
+
     if "oauth_state" not in st.session_state:
         st.session_state.oauth_state = secrets.token_urlsafe(24)
 
@@ -98,32 +107,136 @@ if not st.session_state.frameio_access_token:
     st.caption("No Frame.io credentials or tokens are written to the public repository.")
     st.stop()
 
+st.markdown(
+    """
+### Current build stage
+- Monday.com connectivity: **validated**
+- Monthly project selection: **validated**
+- Frame.io OAuth: **connected**
+- Frame.io hierarchy discovery: **testing now**
+- QC classification: **not connected yet**
+- Excel report generation: **not connected yet**
+"""
+)
+
 headers = {"Authorization": f"Bearer {st.session_state.frameio_access_token}"}
 
-me_response = requests.get(f"{FRAMEIO_BASE_URL}/me", headers=headers, timeout=45)
-accounts_response = requests.get(f"{FRAMEIO_BASE_URL}/accounts", headers=headers, timeout=45)
 
-if me_response.ok and accounts_response.ok:
-    me_payload = me_response.json()
-    accounts_payload = accounts_response.json()
+def api_get(path: str, params: dict | None = None) -> requests.Response:
+    return requests.get(
+        f"{FRAMEIO_BASE_URL}{path}",
+        headers=headers,
+        params=params,
+        timeout=45,
+    )
 
-    me_data = me_payload.get("data", me_payload) if isinstance(me_payload, dict) else {}
-    if isinstance(accounts_payload, dict):
-        account_rows = accounts_payload.get("data") or accounts_payload.get("accounts") or []
-    else:
-        account_rows = accounts_payload if isinstance(accounts_payload, list) else []
 
-    st.success("Frame.io connection successful.")
-    st.write(f"Authenticated user: **{me_data.get('name', 'Available')}**")
-    st.write(f"Accessible Frame.io accounts: **{len(account_rows)}**")
-    st.caption("This is currently a read-only connectivity check.")
+def rows_from_payload(payload):
+    if isinstance(payload, dict):
+        rows = payload.get("data")
+        if isinstance(rows, list):
+            return rows
+    if isinstance(payload, list):
+        return payload
+    return []
 
-    if st.button("Disconnect Frame.io"):
-        st.session_state.frameio_access_token = None
-        st.session_state.pop("oauth_state", None)
-        st.rerun()
-else:
+
+me_response = api_get("/me")
+accounts_response = api_get("/accounts", {"page_size": 100})
+
+if not (me_response.ok and accounts_response.ok):
     st.error(
         "Adobe login succeeded, but the Frame.io API connectivity check failed. "
         f"/me={me_response.status_code}, /accounts={accounts_response.status_code}"
     )
+    st.stop()
+
+me_payload = me_response.json()
+accounts_payload = accounts_response.json()
+
+me_data = me_payload.get("data", me_payload) if isinstance(me_payload, dict) else {}
+account_rows = rows_from_payload(accounts_payload)
+
+st.success("Frame.io connection successful.")
+st.write(f"Authenticated user: **{me_data.get('name', 'Available')}**")
+st.write(f"Accessible Frame.io accounts: **{len(account_rows)}**")
+
+if not account_rows:
+    st.error("No Frame.io accounts were returned for this user.")
+    st.stop()
+
+account_labels = {
+    (row.get("display_name") or row.get("name") or f"Account {idx + 1}"): row
+    for idx, row in enumerate(account_rows)
+}
+selected_account_label = st.selectbox(
+    "Frame.io account",
+    list(account_labels.keys()),
+)
+selected_account = account_labels[selected_account_label]
+account_id = selected_account.get("id")
+
+workspaces_response = api_get(
+    f"/accounts/{account_id}/workspaces",
+    {"page_size": 100, "include_total_count": "true"},
+)
+
+if not workspaces_response.ok:
+    st.error(
+        "Could not list Frame.io workspaces for the selected account. "
+        f"HTTP {workspaces_response.status_code}"
+    )
+    st.stop()
+
+workspace_rows = rows_from_payload(workspaces_response.json())
+st.write(f"Accessible workspaces in selected account: **{len(workspace_rows)}**")
+
+if not workspace_rows:
+    st.warning("No workspaces are accessible in this account.")
+else:
+    workspace_labels = {
+        (row.get("name") or f"Workspace {idx + 1}"): row
+        for idx, row in enumerate(workspace_rows)
+    }
+    selected_workspace_label = st.selectbox(
+        "Workspace",
+        list(workspace_labels.keys()),
+    )
+    selected_workspace = workspace_labels[selected_workspace_label]
+    workspace_id = selected_workspace.get("id")
+
+    projects_response = api_get(
+        f"/accounts/{account_id}/workspaces/{workspace_id}/projects",
+        {"page_size": 100, "include_total_count": "true", "sort": "name_asc"},
+    )
+
+    if not projects_response.ok:
+        st.error(
+            "Could not list projects for the selected workspace. "
+            f"HTTP {projects_response.status_code}"
+        )
+    else:
+        project_rows = rows_from_payload(projects_response.json())
+        st.write(f"Projects visible in selected workspace: **{len(project_rows)}**")
+
+        if project_rows:
+            project_names = [
+                row.get("name") or f"Project {idx + 1}"
+                for idx, row in enumerate(project_rows)
+            ]
+            selected_project_name = st.selectbox(
+                "Project access check",
+                project_names,
+            )
+            st.success(f"Project access confirmed: {selected_project_name}")
+            st.caption(
+                "Next milestone: use a real Monday Frame.io review link to resolve the "
+                "linked asset, inspect its version stack, and extract comments read-only."
+            )
+        else:
+            st.warning("No projects are visible in this workspace.")
+
+if st.button("Disconnect Frame.io"):
+    st.session_state.frameio_access_token = None
+    st.session_state.pop("oauth_state", None)
+    st.rerun()
