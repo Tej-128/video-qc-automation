@@ -1,0 +1,39 @@
+name: Code Validation
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile Python
+        run: python -m py_compile streamlit_app.py src/*.py
+
+      - name: Import production modules
+        run: |
+          python - <<'PY'
+          from src.frameio_client import FrameIOClient
+          from src.pipeline import run_pipeline
+          from src.qc_classifier import classify_comments
+          from src.report_generator import build_report
+          print("Production modules imported successfully.")
+          PY
