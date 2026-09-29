@@ -1,0 +1,45 @@
+name: Monthly Monday QC Extract
+
+on:
+  workflow_dispatch:
+    inputs:
+      report_month:
+        description: "Month to extract (YYYY-MM), e.g. 2026-08"
+        required: true
+        default: "2026-08"
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Extract monthly QC projects from Monday
+        env:
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+          REPORT_MONTH: ${{ inputs.report_month }}
+        run: python src/monday_monthly_extract.py
+
+      - name: Upload monthly extraction
+        uses: actions/upload-artifact@v4
+        with:
+          name: monday-monthly-qc-${{ inputs.report_month }}
+          path: |
+            artifacts/monday_monthly_qc_${{ inputs.report_month }}.json
+            artifacts/monday_monthly_qc_${{ inputs.report_month }}.csv
+          if-no-files-found: error
+          retention-days: 7
