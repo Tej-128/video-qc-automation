@@ -34,7 +34,7 @@ SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "comment_id": {"type": "string"},
+                    "record_key": {"type": "string"},
                     "issues": {
                         "type": "array",
                         "items": {
@@ -54,7 +54,7 @@ SCHEMA = {
                         },
                     },
                 },
-                "required": ["comment_id", "issues"],
+                "required": ["record_key", "issues"],
                 "additionalProperties": False,
             },
         }
@@ -89,7 +89,7 @@ Rules:
 9. Never invent facts outside the comment text and supplied metadata.
 10. Keep error_summary short and concrete.
 11. pattern_label must be a short normalized recurring-pattern phrase, reusing the same wording for similar errors across different comments (for example: "Footage pacing", "Audio-video mismatch", "Incorrect highlighting", "On-screen text formatting").
-12. Return exactly one classification object for every supplied comment_id, even when its issues array is empty.
+12. Return exactly one classification object for every supplied record_key, even when its issues array is empty.
 """
 
 
@@ -110,20 +110,24 @@ def _classify_batch(
     batch_number: int,
 ) -> tuple[int, list[dict[str, Any]]]:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    user_payload = [
-        {
-            "comment_id": row.get("comment_id", ""),
-            "version_number": row.get("version_number"),
-            "is_reply": bool(row.get("is_reply")),
-            "parent_comment_id": row.get("parent_comment_id", ""),
-            "commenter": row.get("commenter", ""),
-            "text": row.get("text", ""),
-            "repeated_from_prior_version": bool(row.get("repeated_from_prior_version")),
-            "prior_match_text": row.get("prior_match_text", ""),
-        }
-        for row in batch
-    ]
-    expected_ids = {str(row.get("comment_id") or "") for row in user_payload}
+    key_to_comment_id: dict[str, str] = {}
+    user_payload = []
+    for index, row in enumerate(batch, start=1):
+        record_key = f"B{batch_number:03d}C{index:03d}"
+        key_to_comment_id[record_key] = str(row.get("comment_id") or "")
+        user_payload.append(
+            {
+                "record_key": record_key,
+                "version_number": row.get("version_number"),
+                "is_reply": bool(row.get("is_reply")),
+                "parent_comment_id": row.get("parent_comment_id", ""),
+                "commenter": row.get("commenter", ""),
+                "text": row.get("text", ""),
+                "repeated_from_prior_version": bool(row.get("repeated_from_prior_version")),
+                "prior_match_text": row.get("prior_match_text", ""),
+            }
+        )
+    expected_keys = set(key_to_comment_id)
 
     body = {
         "model": model,
@@ -167,15 +171,25 @@ def _classify_batch(
 
             parsed = json.loads(text)
             rows = parsed.get("classifications") or []
-            returned_ids = {str(row.get("comment_id") or "") for row in rows}
+            returned_keys = {str(row.get("record_key") or "") for row in rows}
 
-            if returned_ids != expected_ids:
-                missing = sorted(expected_ids - returned_ids)
-                extra = sorted(returned_ids - expected_ids)
+            if returned_keys != expected_keys:
+                missing = sorted(expected_keys - returned_keys)
+                extra = sorted(returned_keys - expected_keys)
                 raise RuntimeError(
                     f"OpenAI batch coverage mismatch: missing={len(missing)}, extra={len(extra)}"
                 )
-            return batch_number, rows
+
+            normalized_rows = []
+            for row in rows:
+                record_key = str(row.get("record_key") or "")
+                normalized_rows.append(
+                    {
+                        "comment_id": key_to_comment_id[record_key],
+                        "issues": row.get("issues") or [],
+                    }
+                )
+            return batch_number, normalized_rows
         except Exception as exc:
             last_error = exc
             if attempt < 2:
