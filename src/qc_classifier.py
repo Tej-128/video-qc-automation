@@ -11,17 +11,17 @@ OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_MODEL = "gpt-5.6-terra"
 
 SCRIPTING_CATEGORIES = {
-    "Language & Narration": "Grammar, wording, narration phrasing, language quality, pronunciation/narration-script issues.",
-    "Titles & On-screen Text": "Scripting-side title, label, caption, or on-screen text content/instruction issues.",
-    "Scientific Accuracy & Completeness": "Incorrect, incomplete, misleading, or missing scientific/procedural information.",
-    "Scientific Formatting": "Scientific nomenclature and formatting such as italics, symbols, units, notation, capitalization, or conventions.",
+    "Language & Narration": "Grammar, wording, sentence structure, awkward phrasing, redundant narration, and unnecessary words",
+    "Titles & On-screen Text": "Section titles, author names, affiliations, missing on-screen references, and title consistency",
+    "Scientific Accuracy & Completeness": "Incorrect scientific statements, missing procedural details, terminology, missing measurements, unclear explanations",
+    "Scientific Formatting": "Italics, superscripts, equations, scientific notation",
 }
 
 VIDEO_CATEGORIES = {
-    "Audio/Visual": "Editing issues involving audio, footage, visual quality, cuts, timing, synchronization, or presentation.",
-    "On-Screen Text": "Execution/formatting errors in text that appears in the edited video, including labels, titles, spelling, placement, or styling.",
-    "Result Section": "Editing problems specific to the result/results portion of the video, including result visuals, sequencing, highlighting, or presentation.",
-    "Previous Comments Unaddressed": "A prior QC correction was not implemented and is explicitly raised again in a later version/comment.",
+    "Audio/Visual": "Sound glitch, video glitch, blurry footage, footage pacing",
+    "On-Screen Text": "Spelling errors, interpretation errors, format errors",
+    "Result Section": "Incorrect highlights, incorrect labelling, not using contrast colours",
+    "Previous Comments Unaddressed": "Comments from previous versions left unaddressed in new versions (editing and non-editing related)",
 }
 
 ALL_CATEGORIES = list(SCRIPTING_CATEGORIES) + list(VIDEO_CATEGORIES) + ["None"]
@@ -47,8 +47,9 @@ SCHEMA = {
                                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                                 "needs_review": {"type": "boolean"},
                                 "reason": {"type": "string"},
+                                "pattern_label": {"type": "string"},
                             },
-                            "required": ["team", "category", "error_summary", "error_count", "confidence", "needs_review", "reason"],
+                            "required": ["team", "category", "error_summary", "error_count", "confidence", "needs_review", "reason", "pattern_label"],
                             "additionalProperties": False,
                         },
                     },
@@ -79,13 +80,16 @@ Video-editing categories:
 Rules:
 1. Analyze every supplied comment, including replies, but do not count acknowledgements, questions, confirmations, or conversational replies as errors unless they clearly contain a new QC correction.
 2. One comment may contain multiple independent corrections. Split them into separate issue objects when categories differ. If a comment clearly identifies multiple occurrences of the same error type, keep one issue object and set error_count to the explicit or clearly implied number; otherwise use 1.
-3. Scripting means the underlying script, content, or instruction is wrong. Video editing means the script or instruction may be correct but its audiovisual execution is wrong.
-4. Use Previous Comments Unaddressed only when the comment explicitly says or clearly indicates that a previously requested correction remains unresolved. This is a new error in addition to the earlier original error.
-5. If there is no genuine QC error, return an empty issues array.
-6. If the team or category is ambiguous, choose the most plausible one but set needs_review=true and lower confidence.
-7. Never invent facts outside the comment text and supplied metadata.
-8. Keep error_summary short and concrete.
-9. Return exactly one classification object for every supplied comment_id, even when its issues array is empty.
+3. Use ONLY the category definitions above. Do not broaden or invent category definitions.
+4. Scripting means the underlying script/content/instruction is wrong. Video editing means the script may be acceptable but the audiovisual execution is wrong.
+5. Explicit hashtags are authoritative team hints when present: #scripting means scripting; #video, #video_editing, and #audio mean video_editing. Hashtags do not by themselves determine the category.
+6. If repeated_from_prior_version=true, classify that later-version correction as video_editing / Previous Comments Unaddressed. Do not also double-count the same correction under its underlying category.
+7. If there is no genuine QC error, return an empty issues array.
+8. If the team or category is ambiguous, choose the most plausible one but set needs_review=true and lower confidence.
+9. Never invent facts outside the comment text and supplied metadata.
+10. Keep error_summary short and concrete.
+11. pattern_label must be a short normalized recurring-pattern phrase, reusing the same wording for similar errors across different comments (for example: "Footage pacing", "Audio-video mismatch", "Incorrect highlighting", "On-screen text formatting").
+12. Return exactly one classification object for every supplied comment_id, even when its issues array is empty.
 """
 
 
@@ -114,6 +118,8 @@ def _classify_batch(
             "parent_comment_id": row.get("parent_comment_id", ""),
             "commenter": row.get("commenter", ""),
             "text": row.get("text", ""),
+            "repeated_from_prior_version": bool(row.get("repeated_from_prior_version")),
+            "prior_match_text": row.get("prior_match_text", ""),
         }
         for row in batch
     ]
@@ -278,7 +284,9 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     "ai_error_count": 0,
                     "confidence": 0.0,
                     "needs_review": True,
+                    "performance_eligible": False,
                     "classification_reason": classification_errors[comment_id],
+                    "pattern_label": "",
                     "ai_assignee": "",
                     "scriptwriter": project.get("scriptwriter", ""),
                     "science_video_editor": project.get("science_video_editor", ""),
@@ -296,11 +304,15 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     assignee = project.get("scriptwriter", "")
                     attribution_review = not bool(assignee)
                 else:
-                    assignee = primary_editor
+                    # When rough/science/finishing editors differ, do not guess who
+                    # owns the error. Keep it in Needs Review and exclude it from
+                    # contributor performance until reviewed.
+                    assignee = "" if handover else primary_editor
                     attribution_review = handover or not bool(assignee)
 
                 confidence = float(issue.get("confidence") or 0)
                 needs_review = bool(issue.get("needs_review")) or confidence < 0.78 or attribution_review
+                performance_eligible = bool(assignee) and not needs_review
 
                 error_rows.append({
                     "article_id": project.get("article_id", ""),
@@ -326,7 +338,9 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     "ai_error_count": int(issue.get("error_count") or 1),
                     "confidence": confidence,
                     "needs_review": needs_review,
+                    "performance_eligible": performance_eligible,
                     "classification_reason": issue.get("reason", ""),
+                    "pattern_label": issue.get("pattern_label", ""),
                     "ai_assignee": assignee,
                     "scriptwriter": project.get("scriptwriter", ""),
                     "science_video_editor": project.get("science_video_editor", ""),
