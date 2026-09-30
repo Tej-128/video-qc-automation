@@ -120,10 +120,19 @@ def run_pipeline(
         0.65,
     )
 
+    def classification_progress(done: int, total_batches: int) -> None:
+        fraction = done / max(total_batches, 1)
+        _notify(
+            progress_callback,
+            f"OpenAI classification batch {done}/{total_batches} complete...",
+            0.65 + (0.18 * fraction),
+        )
+
     classifications = classify_comments(
         openai_api_key,
         all_comments,
         model=openai_model,
+        progress_callback=classification_progress,
     )
     error_rows = attach_classifications(bundles, classifications)
 
