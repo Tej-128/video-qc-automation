@@ -138,7 +138,7 @@ def _classify_batch(
                 "schema": SCHEMA,
             }
         },
-        "reasoning": {"effort": "low"},
+        "reasoning": {"effort": "none"},
         "store": False,
     }
 
