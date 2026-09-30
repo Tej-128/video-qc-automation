@@ -10,6 +10,7 @@ from src.frameio_client import FrameIOClient, Resolution
 from src.monday_monthly_extract import fetch_all_items, normalize, parse_date
 from src.qc_classifier import attach_classifications, classify_comments
 from src.report_generator import build_report
+from src.qa import audit_run
 
 ProgressCallback = Callable[[str, float], None]
 
@@ -217,6 +218,16 @@ def run_pipeline(
         error_rows=error_rows,
     )
 
+    _notify(progress_callback, "Auditing generated reports against live run data...", 0.96)
+    qa = audit_run(
+        projects=projects,
+        bundles=bundles,
+        classifications=classifications,
+        error_rows=error_rows,
+        scripting_report=scripting_report,
+        video_report=video_report,
+    )
+
     resolved = [
         bundle
         for bundle in bundles
@@ -254,6 +265,7 @@ def run_pipeline(
             "needs_review": len(needs_review_errors) + len(unresolved),
             "classification_failures": len(classification_failures),
         },
+        "qa": qa,
         "unresolved": [
             {
                 "article_id": (bundle.get("project") or {}).get("article_id", ""),
