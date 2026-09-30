@@ -1,2 +1,2 @@
-BUILD_VERSION = "QC-V2.3-2026-09-30"
-BUILD_LABEL = "self-auditing recovery loop"
+BUILD_VERSION = "QC-V2.4-2026-10-01"
+BUILD_LABEL = "95-percent validated production candidate"
