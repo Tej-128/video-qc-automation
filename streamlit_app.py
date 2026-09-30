@@ -26,6 +26,16 @@ st.title("Video QC Automation")
 st.caption("Monday.com → Frame.io → OpenAI → two monthly QC reports")
 
 
+@st.cache_resource
+def frameio_token_store() -> dict[str, str | None]:
+    # Shared only inside the active Streamlit worker. This removes repeat Adobe
+    # sign-ins across browser refreshes/new sessions while the app stays awake.
+    return {"access_token": None, "refresh_token": None}
+
+
+token_store = frameio_token_store()
+
+
 def previous_month(today: date) -> tuple[int, int]:
     first = today.replace(day=1)
     previous = first - timedelta(days=1)
@@ -61,9 +71,9 @@ if missing:
     st.stop()
 
 if "frameio_access_token" not in st.session_state:
-    st.session_state.frameio_access_token = None
+    st.session_state.frameio_access_token = token_store.get("access_token")
 if "frameio_refresh_token" not in st.session_state:
-    st.session_state.frameio_refresh_token = None
+    st.session_state.frameio_refresh_token = token_store.get("refresh_token")
 
 query_params = st.query_params
 code = query_params.get("code")
@@ -99,6 +109,8 @@ if code and not st.session_state.frameio_access_token:
     token_payload = token_response.json()
     st.session_state.frameio_access_token = token_payload.get("access_token")
     st.session_state.frameio_refresh_token = token_payload.get("refresh_token")
+    token_store["access_token"] = st.session_state.frameio_access_token
+    token_store["refresh_token"] = st.session_state.frameio_refresh_token
     st.query_params.clear()
     st.rerun()
 
@@ -146,11 +158,15 @@ if me_response.status_code == 401 and st.session_state.frameio_refresh_token:
             refresh_payload.get("refresh_token")
             or st.session_state.frameio_refresh_token
         )
+        token_store["access_token"] = st.session_state.frameio_access_token
+        token_store["refresh_token"] = st.session_state.frameio_refresh_token
         st.rerun()
 
 if me_response.status_code == 401:
     st.session_state.frameio_access_token = None
     st.session_state.frameio_refresh_token = None
+    token_store["access_token"] = None
+    token_store["refresh_token"] = None
     st.session_state.pop("oauth_state", None)
     st.warning(
         "The Adobe session expired. A fresh Adobe sign-in is required for this new Streamlit session."
@@ -172,6 +188,8 @@ with top_right:
     if st.button("Disconnect Frame.io"):
         st.session_state.frameio_access_token = None
         st.session_state.frameio_refresh_token = None
+        token_store["access_token"] = None
+        token_store["refresh_token"] = None
         st.session_state.pop("oauth_state", None)
         for key in ("qc_result", "qc_run_key"):
             st.session_state.pop(key, None)
@@ -250,6 +268,13 @@ if result:
     m3.metric("Comments analyzed", metrics["comments_analyzed"])
     m4.metric("Errors counted", metrics["total_error_count"])
     m5.metric("Needs review", metrics["needs_review"])
+
+    if metrics.get("classification_failures", 0):
+        st.warning(
+            f"{metrics['classification_failures']} comment(s) could not be classified by OpenAI "
+            "after retries. The Excel files were still generated, and those comments are listed "
+            "in the Needs Review sheet instead of blocking the whole run."
+        )
 
     prefix = f"{result['year']:04d}_{result['month']:02d}"
     d1, d2 = st.columns(2)
