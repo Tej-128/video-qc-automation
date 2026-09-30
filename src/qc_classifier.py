@@ -143,13 +143,13 @@ def _classify_batch(
     }
 
     last_error: Exception | None = None
-    for attempt in range(1, 4):
+    for attempt in range(1, 3):
         try:
             response = requests.post(
                 OPENAI_RESPONSES_URL,
                 headers=headers,
                 json=body,
-                timeout=(15, 90),
+                timeout=(10, 60),
             )
             if response.status_code == 429 or response.status_code >= 500:
                 raise RuntimeError(f"OpenAI temporary HTTP {response.status_code}")
@@ -172,11 +172,11 @@ def _classify_batch(
             return batch_number, rows
         except Exception as exc:
             last_error = exc
-            if attempt < 3:
+            if attempt < 2:
                 time.sleep(2 * attempt)
 
     raise RuntimeError(
-        f"OpenAI classification batch {batch_number} failed after 3 attempts: {last_error}"
+        f"OpenAI classification batch {batch_number} failed after 2 attempts: {last_error}"
     )
 
 
