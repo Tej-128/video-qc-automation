@@ -62,6 +62,8 @@ if missing:
 
 if "frameio_access_token" not in st.session_state:
     st.session_state.frameio_access_token = None
+if "frameio_refresh_token" not in st.session_state:
+    st.session_state.frameio_refresh_token = None
 
 query_params = st.query_params
 code = query_params.get("code")
@@ -96,6 +98,7 @@ if code and not st.session_state.frameio_access_token:
 
     token_payload = token_response.json()
     st.session_state.frameio_access_token = token_payload.get("access_token")
+    st.session_state.frameio_refresh_token = token_payload.get("refresh_token")
     st.query_params.clear()
     st.rerun()
 
@@ -122,10 +125,36 @@ if not st.session_state.frameio_access_token:
 headers = {"Authorization": f"Bearer {st.session_state.frameio_access_token}"}
 me_response = requests.get(f"{FRAMEIO_BASE_URL}/me", headers=headers, timeout=45)
 
+if me_response.status_code == 401 and st.session_state.frameio_refresh_token:
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    refresh_response = requests.post(
+        ADOBE_TOKEN_URL,
+        headers={
+            "Authorization": f"Basic {basic}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": st.session_state.frameio_refresh_token,
+        },
+        timeout=45,
+    )
+    if refresh_response.ok:
+        refresh_payload = refresh_response.json()
+        st.session_state.frameio_access_token = refresh_payload.get("access_token")
+        st.session_state.frameio_refresh_token = (
+            refresh_payload.get("refresh_token")
+            or st.session_state.frameio_refresh_token
+        )
+        st.rerun()
+
 if me_response.status_code == 401:
     st.session_state.frameio_access_token = None
+    st.session_state.frameio_refresh_token = None
     st.session_state.pop("oauth_state", None)
-    st.warning("The Frame.io session expired. Please authenticate again.")
+    st.warning(
+        "The Adobe session expired. A fresh Adobe sign-in is required for this new Streamlit session."
+    )
     st.rerun()
 
 if not me_response.ok:
@@ -142,6 +171,7 @@ with top_left:
 with top_right:
     if st.button("Disconnect Frame.io"):
         st.session_state.frameio_access_token = None
+        st.session_state.frameio_refresh_token = None
         st.session_state.pop("oauth_state", None)
         for key in ("qc_result", "qc_run_key"):
             st.session_state.pop(key, None)
