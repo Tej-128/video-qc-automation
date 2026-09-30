@@ -37,6 +37,12 @@ def frameio_token_store() -> dict[str, str | None]:
 
 token_store = frameio_token_store()
 
+# Never carry a completed report from an older deployed build into a newer one.
+if st.session_state.get("_app_build_version") != BUILD_VERSION:
+    st.session_state.pop("qc_result", None)
+    st.session_state.pop("qc_run_key", None)
+    st.session_state["_app_build_version"] = BUILD_VERSION
+
 
 def previous_month(today: date) -> tuple[int, int]:
     first = today.replace(day=1)
