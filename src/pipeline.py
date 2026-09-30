@@ -167,6 +167,11 @@ def run_pipeline(
         if not bundle.get("resolution") or bundle["resolution"].status != "resolved"
     ]
     needs_review_errors = [row for row in error_rows if row.get("needs_review")]
+    classification_failures = [
+        row for row in error_rows
+        if row.get("team") == "review"
+        and row.get("error_summary") == "OpenAI classification failed for this comment"
+    ]
 
     _notify(progress_callback, "Reports ready.", 1.0)
 
@@ -186,6 +191,7 @@ def run_pipeline(
             "classified_error_rows": len(error_rows),
             "total_error_count": sum(int(row.get("ai_error_count") or 0) for row in error_rows),
             "needs_review": len(needs_review_errors) + len(unresolved),
+            "classification_failures": len(classification_failures),
         },
         "unresolved": [
             {
