@@ -202,13 +202,27 @@ def classify_comments(
 
     with ThreadPoolExecutor(max_workers=min(max_workers, total_batches)) as executor:
         futures = {
-            executor.submit(_classify_batch, api_key, batch, model, index): index
+            executor.submit(_classify_batch, api_key, batch, model, index): (index, batch)
             for index, batch in enumerate(batches, start=1)
         }
 
         for future in as_completed(futures):
-            batch_number, rows = future.result()
-            ordered[batch_number] = rows
+            batch_number, source_batch = futures[future]
+            try:
+                returned_batch_number, rows = future.result()
+                ordered[returned_batch_number] = rows
+            except Exception as exc:
+                # Never lose the monthly report because one OpenAI batch failed.
+                # Every comment in the failed batch is preserved and surfaced in
+                # Needs Review, while the remaining batches continue normally.
+                ordered[batch_number] = [
+                    {
+                        "comment_id": str(row.get("comment_id") or ""),
+                        "issues": [],
+                        "_classification_error": str(exc),
+                    }
+                    for row in source_batch
+                ]
             completed += 1
             if progress_callback:
                 progress_callback(completed, total_batches)
@@ -222,6 +236,11 @@ def classify_comments(
 
 def attach_classifications(projects: list[dict[str, Any]], classifications: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_comment = {str(row.get("comment_id") or ""): row.get("issues") or [] for row in classifications}
+    classification_errors = {
+        str(row.get("comment_id") or ""): str(row.get("_classification_error") or "")
+        for row in classifications
+        if row.get("_classification_error")
+    }
     error_rows: list[dict[str, Any]] = []
 
     for project_bundle in projects:
@@ -233,7 +252,41 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
         handover = len(distinct_editors) > 1
 
         for comment in project_bundle.get("comments") or []:
-            for issue_index, issue in enumerate(by_comment.get(comment.get("comment_id", ""), []), start=1):
+            comment_id = str(comment.get("comment_id") or "")
+            if comment_id in classification_errors:
+                error_rows.append({
+                    "article_id": project.get("article_id", ""),
+                    "item_name": project.get("item_name", ""),
+                    "date_video_released": project.get("date_video_released", ""),
+                    "draft_script_sent": project.get("draft_script_sent", ""),
+                    "frameio_review_link": project.get("frameio_review_link", ""),
+                    "resolution_method": resolution.method,
+                    "asset_name": resolution.asset_name,
+                    "version_number": comment.get("version_number"),
+                    "version_name": comment.get("version_name", ""),
+                    "comment_id": comment_id,
+                    "parent_comment_id": comment.get("parent_comment_id", ""),
+                    "is_reply": bool(comment.get("is_reply")),
+                    "commenter": comment.get("commenter", ""),
+                    "comment_created_at": comment.get("created_at", ""),
+                    "timecode": comment.get("timestamp", ""),
+                    "comment_text": comment.get("text", ""),
+                    "issue_index": 0,
+                    "team": "review",
+                    "ai_category": "None",
+                    "error_summary": "OpenAI classification failed for this comment",
+                    "ai_error_count": 0,
+                    "confidence": 0.0,
+                    "needs_review": True,
+                    "classification_reason": classification_errors[comment_id],
+                    "ai_assignee": "",
+                    "scriptwriter": project.get("scriptwriter", ""),
+                    "science_video_editor": project.get("science_video_editor", ""),
+                    "finishing_editor": project.get("finishing_editor", ""),
+                    "rough_editor": project.get("rough_editor", ""),
+                })
+
+            for issue_index, issue in enumerate(by_comment.get(comment_id, []), start=1):
                 team = issue.get("team", "none")
                 category = issue.get("category", "None")
                 if team == "none" or category == "None" or int(issue.get("error_count") or 0) <= 0:
