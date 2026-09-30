@@ -270,12 +270,30 @@ if result:
     metrics = result["metrics"]
     st.subheader(f"Run summary — {result['year']:04d}-{result['month']:02d}")
 
-    m1, m2, m3, m4, m5 = st.columns(5)
+    qa = result.get("qa") or {}
+    quality_score = float(qa.get("score", 0.0))
+    quality_attempt = int(result.get("quality_attempt", 1))
+
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Monthly projects", metrics["monthly_projects"])
     m2.metric("Frame.io resolved", metrics["frameio_resolved"])
     m3.metric("Comments analyzed", metrics["comments_analyzed"])
     m4.metric("Errors counted", metrics["total_error_count"])
     m5.metric("Needs review", metrics["needs_review"])
+    m6.metric("QA score", f"{quality_score:.1%}")
+
+    if qa.get("passed"):
+        st.success(
+            f"Automated QA passed the 95% target on quality attempt {quality_attempt}. "
+            "Downloads below are release-ready for review."
+        )
+    else:
+        st.warning(
+            f"Automated QA stopped at {quality_score:.1%} after quality attempt {quality_attempt}. "
+            "Downloads are provisional; see the QA findings below."
+        )
+        for note in qa.get("notes") or []:
+            st.write(f"• {note}")
 
     if metrics.get("classification_failures", 0):
         st.warning(
@@ -315,6 +333,6 @@ if result:
         st.success("All monthly Monday projects were resolved to Frame.io.")
 
     st.caption(
-        "The Error Detail sheet includes editable manual override columns. "
-        "Raw Frame.io comments are retained in a hidden audit sheet inside each workbook."
+        "Each workbook includes a Needs Review tab, hidden Error Detail / raw Frame.io audit tabs, "
+        "and hidden build metadata so every download can be traced to the deployed QC version."
     )
