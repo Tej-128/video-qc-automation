@@ -10,6 +10,7 @@ from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 from src.qc_classifier import SCRIPTING_CATEGORIES, VIDEO_CATEGORIES
+from src.version import BUILD_LABEL, BUILD_VERSION
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
@@ -615,6 +616,17 @@ def _pattern_sheet(wb, error_rows):
     return ws
 
 
+
+def _build_info_sheet(wb, team: str, year: int, month: int) -> None:
+    ws = wb.create_sheet("_Build Info")
+    ws.append(["Build Version", BUILD_VERSION])
+    ws.append(["Build Label", BUILD_LABEL])
+    ws.append(["Report Team", team])
+    ws.append(["Selected Release Month", f"{year:04d}-{month:02d}"])
+    ws.append(["Reference", "Swati June QC format + approved Video QC error sheet"])
+    ws.sheet_state = "hidden"
+
+
 def build_report(
     *,
     team: str,
@@ -643,6 +655,7 @@ def build_report(
     _needs_review_sheet(wb, bundles, error_rows)
     _error_detail_sheet(wb, error_rows)
     _raw_comments_sheet(wb, bundles)
+    _build_info_sheet(wb, team, year, month)
 
     output = BytesIO()
     wb.save(output)
