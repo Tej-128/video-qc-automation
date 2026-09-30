@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime
+from difflib import SequenceMatcher
+import re
 from typing import Any, Callable
 
 from src.frameio_client import FrameIOClient, Resolution
@@ -44,6 +46,63 @@ def _month_projects(monday_token: str, year: int, month: int) -> tuple[str, list
         )
     )
     return board_name, selected
+
+
+def _normalize_comment_text(text: str) -> str:
+    text = re.sub(r"#(?:scripting|video_editing|video|audio)\b", " ", text or "", flags=re.I)
+    text = re.sub(r"[^a-z0-9]+", " ", text.casefold())
+    return " ".join(text.split())
+
+
+def _annotate_repeat_context(bundles: list[dict[str, Any]]) -> None:
+    explicit_repeat = re.compile(
+        r"\b(previous comment|previous comments|as mentioned before|mentioned earlier|"
+        r"still not|still needs|still need|not addressed|unaddressed|again|same issue)\b",
+        re.I,
+    )
+
+    for bundle in bundles:
+        comments = sorted(
+            bundle.get("comments") or [],
+            key=lambda row: (
+                int(row.get("version_number") or 0),
+                str(row.get("created_at") or ""),
+            ),
+        )
+        prior_by_version: dict[int, list[dict[str, Any]]] = {}
+
+        for comment in comments:
+            version = int(comment.get("version_number") or 0)
+            text = str(comment.get("text") or "")
+            normalized = _normalize_comment_text(text)
+            best_score = 0.0
+            best_text = ""
+
+            for prior_version, prior_rows in prior_by_version.items():
+                if prior_version >= version:
+                    continue
+                for prior in prior_rows:
+                    prior_text = str(prior.get("text") or "")
+                    prior_norm = _normalize_comment_text(prior_text)
+                    if not normalized or not prior_norm:
+                        continue
+                    if normalized == prior_norm:
+                        score = 1.0
+                    elif min(len(normalized), len(prior_norm)) < 20:
+                        score = 0.0
+                    else:
+                        score = SequenceMatcher(None, normalized, prior_norm).ratio()
+                    if score > best_score:
+                        best_score = score
+                        best_text = prior_text
+
+            repeated = bool(explicit_repeat.search(text)) and version > 2
+            if best_score >= 0.88:
+                repeated = True
+
+            comment["repeated_from_prior_version"] = repeated
+            comment["prior_match_text"] = best_text if repeated else ""
+            prior_by_version.setdefault(version, []).append(comment)
 
 
 def run_pipeline(
@@ -109,6 +168,8 @@ def run_pipeline(
             bundle = {"project": project, "resolution": resolution, "versions": [], "comments": []}
 
         bundles.append(bundle)
+
+    _annotate_repeat_context(bundles)
 
     all_comments: list[dict[str, Any]] = []
     for bundle in bundles:
