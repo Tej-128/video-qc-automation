@@ -267,8 +267,21 @@ def _needs_review(ws, error_rows: list[dict[str, Any]], team: str, unresolved: l
         if resolution and resolution.status != "resolved":
             ws.append([project.get("article_id", ""), "Frame.io Resolution", resolution.note, "", "", "", ""])
     for row in error_rows:
-        if row.get("team") == team and row.get("needs_review"):
-            ws.append([row.get("article_id", ""), "Classification / Attribution", row.get("classification_reason", ""), row.get("comment_text", ""), row.get("ai_category", ""), row.get("ai_assignee", ""), row.get("confidence", 0)])
+        if row.get("needs_review") and row.get("team") in {team, "review"}:
+            issue_type = (
+                "OpenAI Classification Failure"
+                if row.get("team") == "review"
+                else "Classification / Attribution"
+            )
+            ws.append([
+                row.get("article_id", ""),
+                issue_type,
+                row.get("classification_reason", ""),
+                row.get("comment_text", ""),
+                row.get("ai_category", ""),
+                row.get("ai_assignee", ""),
+                row.get("confidence", 0),
+            ])
     _style_header(ws)
     for row in ws.iter_rows(min_row=2):
         for cell in row:
