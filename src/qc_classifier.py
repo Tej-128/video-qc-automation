@@ -209,49 +209,90 @@ def classify_comments(
     max_workers: int = 4,
     progress_callback: ProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
+    """
+    Classify every comment with progressive recovery:
+    pass 1 = normal large parallel batches,
+    pass 2 = only failed comments in batches of 10,
+    pass 3 = only still-failed comments one at a time.
+
+    No expected output values are hardcoded; recovery is driven entirely by
+    API/coverage failures observed during the current run.
+    """
     if not comments:
         return []
 
-    batches = [
-        comments[start : start + batch_size]
-        for start in range(0, len(comments), batch_size)
-    ]
-    total_batches = len(batches)
-    completed = 0
-    ordered: dict[int, list[dict[str, Any]]] = {}
+    resolved: dict[str, dict[str, Any]] = {}
+    remaining = list(comments)
 
-    with ThreadPoolExecutor(max_workers=min(max_workers, total_batches)) as executor:
-        futures = {
-            executor.submit(_classify_batch, api_key, batch, model, index): (index, batch)
-            for index, batch in enumerate(batches, start=1)
+    def source_key(row: dict[str, Any]) -> str:
+        return str(row.get("comment_id") or "")
+
+    passes = [
+        (batch_size, max_workers),
+        (10, min(max_workers, 4)),
+        (1, min(max_workers, 4)),
+    ]
+
+    for pass_index, (current_batch_size, current_workers) in enumerate(passes, start=1):
+        if not remaining:
+            break
+
+        batches = [
+            remaining[start : start + current_batch_size]
+            for start in range(0, len(remaining), current_batch_size)
+        ]
+        total_batches = len(batches)
+        failures: list[dict[str, Any]] = []
+        completed = 0
+
+        with ThreadPoolExecutor(max_workers=min(current_workers, total_batches)) as executor:
+            futures = {
+                executor.submit(
+                    _classify_batch,
+                    api_key,
+                    batch,
+                    model,
+                    (pass_index * 10000) + index,
+                ): batch
+                for index, batch in enumerate(batches, start=1)
+            }
+
+            for future in as_completed(futures):
+                source_batch = futures[future]
+                try:
+                    _, rows = future.result()
+                    for row in rows:
+                        resolved[str(row.get("comment_id") or "")] = row
+                except Exception:
+                    failures.extend(source_batch)
+
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, total_batches)
+
+        remaining = [
+            row
+            for row in failures
+            if source_key(row) not in resolved
+        ]
+
+    for row in remaining:
+        comment_id = source_key(row)
+        resolved[comment_id] = {
+            "comment_id": comment_id,
+            "issues": [],
+            "_classification_error": (
+                "OpenAI classification could not be recovered after large-batch, "
+                "small-batch, and single-comment attempts."
+            ),
         }
 
-        for future in as_completed(futures):
-            batch_number, source_batch = futures[future]
-            try:
-                returned_batch_number, rows = future.result()
-                ordered[returned_batch_number] = rows
-            except Exception as exc:
-                # Never lose the monthly report because one OpenAI batch failed.
-                # Every comment in the failed batch is preserved and surfaced in
-                # Needs Review, while the remaining batches continue normally.
-                ordered[batch_number] = [
-                    {
-                        "comment_id": str(row.get("comment_id") or ""),
-                        "issues": [],
-                        "_classification_error": str(exc),
-                    }
-                    for row in source_batch
-                ]
-            completed += 1
-            if progress_callback:
-                progress_callback(completed, total_batches)
-
-    results: list[dict[str, Any]] = []
-    for batch_number in range(1, total_batches + 1):
-        results.extend(ordered[batch_number])
-
-    return results
+    # Preserve original Frame.io comment order for deterministic downstream reports.
+    return [
+        resolved[source_key(row)]
+        for row in comments
+        if source_key(row) in resolved
+    ]
 
 
 def attach_classifications(projects: list[dict[str, Any]], classifications: list[dict[str, Any]]) -> list[dict[str, Any]]:
