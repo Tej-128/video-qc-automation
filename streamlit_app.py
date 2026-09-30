@@ -24,7 +24,8 @@ st.set_page_config(
 )
 
 st.title("Video QC Automation")
-st.caption("Monday.com → Frame.io → OpenAI → two monthly QC reports")\nst.info(f"Build: **{BUILD_VERSION}** — {BUILD_LABEL}")
+st.caption("Monday.com → Frame.io → OpenAI → two monthly QC reports")
+st.info(f"Build: **{BUILD_VERSION}** — {BUILD_LABEL}")
 
 
 @st.cache_resource
