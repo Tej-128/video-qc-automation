@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable
 
 import requests
 
@@ -60,6 +62,8 @@ SCHEMA = {
     "additionalProperties": False,
 }
 
+ProgressCallback = Callable[[int, int], None]
+
 
 def _system_prompt() -> str:
     scripting = "\n".join(f"- {k}: {v}" for k, v in SCRIPTING_CATEGORIES.items())
@@ -81,6 +85,7 @@ Rules:
 6. If the team or category is ambiguous, choose the most plausible one but set needs_review=true and lower confidence.
 7. Never invent facts outside the comment text and supplied metadata.
 8. Keep error_summary short and concrete.
+9. Return exactly one classification object for every supplied comment_id, even when its issues array is empty.
 """
 
 
@@ -94,51 +99,123 @@ def _extract_output_text(payload: dict[str, Any]) -> str:
     return ""
 
 
-def classify_comments(api_key: str, comments: list[dict[str, Any]], *, model: str = DEFAULT_MODEL, batch_size: int = 20) -> list[dict[str, Any]]:
+def _classify_batch(
+    api_key: str,
+    batch: list[dict[str, Any]],
+    model: str,
+    batch_number: int,
+) -> tuple[int, list[dict[str, Any]]]:
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    user_payload = [
+        {
+            "comment_id": row.get("comment_id", ""),
+            "version_number": row.get("version_number"),
+            "is_reply": bool(row.get("is_reply")),
+            "parent_comment_id": row.get("parent_comment_id", ""),
+            "commenter": row.get("commenter", ""),
+            "text": row.get("text", ""),
+        }
+        for row in batch
+    ]
+    expected_ids = {str(row.get("comment_id") or "") for row in user_payload}
+
+    body = {
+        "model": model,
+        "instructions": _system_prompt(),
+        "input": [{
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": "Classify these Frame.io QC comments:\n" + json.dumps(user_payload, ensure_ascii=False),
+            }],
+        }],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "video_qc_comment_classification",
+                "description": "Atomic QC error classifications for supplied Frame.io comments.",
+                "strict": True,
+                "schema": SCHEMA,
+            }
+        },
+        "reasoning": {"effort": "low"},
+        "store": False,
+    }
+
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            response = requests.post(
+                OPENAI_RESPONSES_URL,
+                headers=headers,
+                json=body,
+                timeout=(15, 90),
+            )
+            if response.status_code == 429 or response.status_code >= 500:
+                raise RuntimeError(f"OpenAI temporary HTTP {response.status_code}")
+            response.raise_for_status()
+
+            text = _extract_output_text(response.json())
+            if not text:
+                raise RuntimeError("OpenAI returned no structured output text.")
+
+            parsed = json.loads(text)
+            rows = parsed.get("classifications") or []
+            returned_ids = {str(row.get("comment_id") or "") for row in rows}
+
+            if returned_ids != expected_ids:
+                missing = sorted(expected_ids - returned_ids)
+                extra = sorted(returned_ids - expected_ids)
+                raise RuntimeError(
+                    f"OpenAI batch coverage mismatch: missing={len(missing)}, extra={len(extra)}"
+                )
+            return batch_number, rows
+        except Exception as exc:
+            last_error = exc
+            if attempt < 3:
+                time.sleep(2 * attempt)
+
+    raise RuntimeError(
+        f"OpenAI classification batch {batch_number} failed after 3 attempts: {last_error}"
+    )
+
+
+def classify_comments(
+    api_key: str,
+    comments: list[dict[str, Any]],
+    *,
+    model: str = DEFAULT_MODEL,
+    batch_size: int = 50,
+    max_workers: int = 4,
+    progress_callback: ProgressCallback | None = None,
+) -> list[dict[str, Any]]:
     if not comments:
         return []
 
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    results: list[dict[str, Any]] = []
+    batches = [
+        comments[start : start + batch_size]
+        for start in range(0, len(comments), batch_size)
+    ]
+    total_batches = len(batches)
+    completed = 0
+    ordered: dict[int, list[dict[str, Any]]] = {}
 
-    for start in range(0, len(comments), batch_size):
-        batch = comments[start : start + batch_size]
-        user_payload = [
-            {
-                "comment_id": row.get("comment_id", ""),
-                "version_number": row.get("version_number"),
-                "is_reply": bool(row.get("is_reply")),
-                "parent_comment_id": row.get("parent_comment_id", ""),
-                "commenter": row.get("commenter", ""),
-                "text": row.get("text", ""),
-            }
-            for row in batch
-        ]
-
-        body = {
-            "model": model,
-            "instructions": _system_prompt(),
-            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Classify these Frame.io QC comments:\n" + json.dumps(user_payload, ensure_ascii=False)}]}],
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "video_qc_comment_classification",
-                    "description": "Atomic QC error classifications for supplied Frame.io comments.",
-                    "strict": True,
-                    "schema": SCHEMA,
-                }
-            },
-            "reasoning": {"effort": "low"},
-            "store": False,
+    with ThreadPoolExecutor(max_workers=min(max_workers, total_batches)) as executor:
+        futures = {
+            executor.submit(_classify_batch, api_key, batch, model, index): index
+            for index, batch in enumerate(batches, start=1)
         }
 
-        response = requests.post(OPENAI_RESPONSES_URL, headers=headers, json=body, timeout=120)
-        response.raise_for_status()
-        text = _extract_output_text(response.json())
-        if not text:
-            raise RuntimeError("OpenAI returned no structured output text.")
-        parsed = json.loads(text)
-        results.extend(parsed.get("classifications") or [])
+        for future in as_completed(futures):
+            batch_number, rows = future.result()
+            ordered[batch_number] = rows
+            completed += 1
+            if progress_callback:
+                progress_callback(completed, total_batches)
+
+    results: list[dict[str, Any]] = []
+    for batch_number in range(1, total_batches + 1):
+        results.extend(ordered[batch_number])
 
     return results
 
