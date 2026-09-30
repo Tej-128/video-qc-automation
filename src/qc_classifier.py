@@ -82,7 +82,7 @@ Rules:
 2. One comment may contain multiple independent corrections. Split them into separate issue objects when categories differ. If a comment clearly identifies multiple occurrences of the same error type, keep one issue object and set error_count to the explicit or clearly implied number; otherwise use 1.
 3. Use ONLY the category definitions above. Do not broaden or invent category definitions.
 4. Scripting means the underlying script/content/instruction is wrong. Video editing means the script may be acceptable but the audiovisual execution is wrong.
-5. Explicit hashtags are authoritative team hints when present: #scripting means scripting; #video, #video_editing, and #audio mean video_editing. Hashtags do not by themselves determine the category.
+5. Hashtags are supporting evidence, not a substitute for analyzing the actual error. If #scripting or #video_editing is explicitly present, treat it as a strong attribution hint because those labels were proposed for team attribution. Other operational tags such as #video or #audio must not by themselves decide who introduced the error.
 6. If repeated_from_prior_version=true, classify that later-version correction as video_editing / Previous Comments Unaddressed. Do not also double-count the same correction under its underlying category.
 7. If there is no genuine QC error, return an empty issues array.
 8. If the team or category is ambiguous, choose the most plausible one but set needs_review=true and lower confidence.
