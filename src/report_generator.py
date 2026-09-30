@@ -437,12 +437,26 @@ def _analysis_sheet(wb, error_rows, team):
         if row.get("team") == team:
             totals[str(row.get("ai_category"))] += int(row.get("ai_error_count") or 0)
 
-    rows = [("Verified grand total", sum(totals.values()))]
+    classified_total = sum(totals.values())
+    performance_total = sum(
+        int(row.get("ai_error_count") or 0)
+        for row in error_rows
+        if row.get("team") == team and row.get("performance_eligible", False)
+    )
+    review_total = sum(
+        int(row.get("ai_error_count") or 0)
+        for row in error_rows
+        if row.get("team") == team and not row.get("performance_eligible", False)
+    )
+
+    rows = [("AI-classified grand total", classified_total)]
     for category in categories:
         rows.append((category, totals[category]))
 
     rows.extend(
         [
+            ("Performance-eligible error total", performance_total),
+            ("Needs Review classified error total", review_total),
             (
                 "How to assess improvement",
                 "Use Errors per Article and its month-over-month change. Raw counts should be read together with the number of articles completed.",
