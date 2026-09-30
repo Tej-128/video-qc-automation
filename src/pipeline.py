@@ -106,7 +106,7 @@ def _annotate_repeat_context(bundles: list[dict[str, Any]]) -> None:
             prior_by_version.setdefault(version, []).append(comment)
 
 
-def run_pipeline(
+def _run_pipeline_once(
     *,
     monday_token: str,
     frameio_access_token: str,
@@ -286,3 +286,60 @@ def run_pipeline(
             if bundle.get("resolution")
         ],
     }
+
+
+def run_pipeline(
+    *,
+    monday_token: str,
+    frameio_access_token: str,
+    openai_api_key: str,
+    year: int,
+    month: int,
+    openai_model: str = "gpt-5.6-terra",
+    progress_callback: ProgressCallback | None = None,
+    max_quality_attempts: int = 3,
+) -> dict[str, Any]:
+    """
+    Run the live pipeline and automatically retry the complete evidence chain when
+    objective QA is below target. The retry loop is source-driven: it never
+    hardcodes expected article counts, names, error totals, or contributor values.
+    """
+    latest: dict[str, Any] | None = None
+
+    for attempt in range(1, max_quality_attempts + 1):
+        def wrapped_progress(message: str, fraction: float) -> None:
+            if progress_callback:
+                progress_callback(
+                    f"Quality attempt {attempt}/{max_quality_attempts}: {message}",
+                    fraction,
+                )
+
+        latest = _run_pipeline_once(
+            monday_token=monday_token,
+            frameio_access_token=frameio_access_token,
+            openai_api_key=openai_api_key,
+            year=year,
+            month=month,
+            openai_model=openai_model,
+            progress_callback=wrapped_progress,
+        )
+        latest["quality_attempt"] = attempt
+
+        qa = latest.get("qa") or {}
+        if qa.get("passed"):
+            return latest
+
+        # Only retry when another live read/model attempt can plausibly improve
+        # the evidence. Structural workbook failures are deterministic code bugs
+        # and should surface immediately rather than waste API calls.
+        data_checks = qa.get("data_checks") or {}
+        recoverable = (
+            not data_checks.get("frameio_resolution_complete", True)
+            or not data_checks.get("classification_coverage_complete", True)
+            or float(data_checks.get("commenter_identity_coverage", 1.0)) < 0.95
+        )
+        if not recoverable:
+            return latest
+
+    assert latest is not None
+    return latest
