@@ -13,12 +13,14 @@ from src.qc_classifier import SCRIPTING_CATEGORIES, VIDEO_CATEGORIES
 from src.version import BUILD_LABEL, BUILD_VERSION
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
-HEADER_FONT = Font(color="FFFFFF", bold=True)
+HEADER_FONT = Font(name="Calibri", size=11, color="FFFFFF", bold=True)
 TOTAL_FILL = PatternFill("solid", fgColor="D9EAF7")
 TOTAL_FONT = Font(color="17365D", bold=True)
 CAUTION_FILL = PatternFill("solid", fgColor="FCE4D6")
 THIN = Side(style="thin", color="D9E2F3")
+MEDIUM = Side(style="medium", color="D9E2F3")
 BOTTOM_BORDER = Border(bottom=THIN)
+MAIN_HEADER_BORDER = Border(bottom=MEDIUM)
 
 
 def _as_date(value: Any) -> date | None:
@@ -48,6 +50,17 @@ def _style_header(ws, headers: list[str]) -> None:
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
         cell.border = BOTTOM_BORDER
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 42
+    ws.sheet_view.showGridLines = False
+
+
+def _style_main_header(ws, headers: list[str]) -> None:
+    for idx, header in enumerate(headers, 1):
+        cell = ws.cell(1, idx, header)
+        cell.fill = HEADER_FILL
+        cell.font = HEADER_FONT
+        cell.border = MAIN_HEADER_BORDER
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     ws.row_dimensions[1].height = 42
     ws.sheet_view.showGridLines = False
@@ -114,15 +127,16 @@ def _main_sheet(wb, projects, error_rows, team):
     for category in categories:
         headers.extend([category, "QC Comment"])
     headers.append("Total Errors")
-    _style_header(ws, headers)
+    _style_main_header(ws, headers)
 
     ws.column_dimensions["A"].width = 24
     ws.column_dimensions["B"].width = 23
     ws.column_dimensions["C"].width = 20
+    category_widths = [13, 23, 30, 20]
     comment_widths = [53, 48, 48, 48]
     col = 4
     for index, _ in enumerate(categories):
-        ws.column_dimensions[ws.cell(1, col).column_letter].width = 30 if col not in (4, 10) else 23
+        ws.column_dimensions[ws.cell(1, col).column_letter].width = category_widths[min(index, len(category_widths) - 1)]
         ws.column_dimensions[ws.cell(1, col + 1).column_letter].width = comment_widths[min(index, len(comment_widths) - 1)]
         col += 2
     ws.column_dimensions[ws.cell(1, col).column_letter].width = 14
@@ -153,11 +167,16 @@ def _main_sheet(wb, projects, error_rows, team):
         row_number = ws.max_row
         ws.row_dimensions[row_number].height = 72
         ws.cell(row_number, 3).number_format = "yyyy-mm-dd"
+        for column in range(1, len(headers) + 1):
+            cell = ws.cell(row_number, column)
+            cell.border = BOTTOM_BORDER
+            if column in (1, 2, 3):
+                cell.alignment = Alignment(vertical="top")
         for column in range(4, len(headers), 2):
-            ws.cell(row_number, column).alignment = Alignment(horizontal="center", vertical="center")
+            ws.cell(row_number, column).alignment = Alignment(horizontal="center", vertical="top")
             if column + 1 < len(headers):
                 ws.cell(row_number, column + 1).alignment = Alignment(wrap_text=True, vertical="top")
-        ws.cell(row_number, len(headers)).alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(row_number, len(headers)).alignment = Alignment(horizontal="center", vertical="top")
         ws.cell(row_number, len(headers)).fill = TOTAL_FILL
         ws.cell(row_number, len(headers)).font = TOTAL_FONT
         if team == "video_editing" and _article_contributor(project, team) == "Needs Review":
@@ -446,7 +465,7 @@ def _analysis_sheet(wb, error_rows, team):
     return ws
 
 
-def _needs_review_sheet(wb, bundles, error_rows):
+def _needs_review_sheet(wb, bundles, error_rows, team):
     ws = wb.create_sheet("Needs Review")
     headers = [
         "Article Number",
@@ -478,6 +497,9 @@ def _needs_review_sheet(wb, bundles, error_rows):
             )
 
     for row in error_rows:
+        row_team = row.get("team")
+        if row_team not in {team, "review"}:
+            continue
         if row.get("needs_review") or not row.get("performance_eligible", True):
             ws.append(
                 [
@@ -500,7 +522,7 @@ def _needs_review_sheet(wb, bundles, error_rows):
     return ws
 
 
-def _error_detail_sheet(wb, error_rows):
+def _error_detail_sheet(wb, error_rows, team):
     ws = wb.create_sheet("Error Detail")
     headers = [
         "Article Number",
@@ -520,6 +542,8 @@ def _error_detail_sheet(wb, error_rows):
     _style_header(ws, headers)
 
     for row in error_rows:
+        if row.get("team") not in {team, "review"}:
+            continue
         ws.append(
             [
                 row.get("item_name") or row.get("article_id"),
@@ -603,6 +627,8 @@ def _pattern_sheet(wb, error_rows):
     for (category, pattern), info in sorted(
         grouped.items(), key=lambda item: (-item[1]["count"], item[0])
     ):
+        if info["count"] < 2 or len(info["articles"]) < 2:
+            continue
         ws.append(
             [
                 category,
@@ -652,8 +678,8 @@ def build_report(
         _pattern_sheet(wb, error_rows)
 
     _analysis_sheet(wb, error_rows, team)
-    _needs_review_sheet(wb, bundles, error_rows)
-    _error_detail_sheet(wb, error_rows)
+    _needs_review_sheet(wb, bundles, error_rows, team)
+    _error_detail_sheet(wb, error_rows, team)
     _raw_comments_sheet(wb, bundles)
     _build_info_sheet(wb, team, year, month)
 
