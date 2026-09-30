@@ -273,35 +273,56 @@ class FrameIOClient:
 
     def comments_for_file(self, account_id: str, file_id: str) -> list[dict[str, Any]]:
         path = f"/accounts/{account_id}/files/{file_id}/comments"
-        params: Any = [("page_size", 100), ("include", "owner"), ("include", "replies"), ("sort", "created_at_asc"), ("timestamp_as_timecode", "true")]
-        response = self._request("GET", path, params=params)
-        if response.status_code in (400, 422):
-            # Some API deployments accept only one include enum at a time.
-            # Replies are more important than expanded owner metadata because the
-            # workflow must analyze every QC comment/reply.
-            response = self._request(
-                "GET",
+
+        # Frame.io V4 exposes include as a single enum (owner OR replies).
+        # Fetch both views and merge them by comment id so we retain replies
+        # without losing the top-level commenter identity.
+        owner_rows: list[dict[str, Any]] = []
+        reply_rows: list[dict[str, Any]] = []
+
+        try:
+            owner_rows = self._paged_get(
                 path,
-                params={
-                    "page_size": 100,
+                {
+                    "include": "owner",
+                    "sort": "created_at_asc",
+                    "timestamp_as_timecode": "true",
+                },
+            )
+        except requests.HTTPError:
+            owner_rows = []
+
+        try:
+            reply_rows = self._paged_get(
+                path,
+                {
                     "include": "replies",
                     "sort": "created_at_asc",
                     "timestamp_as_timecode": "true",
                 },
             )
-        response.raise_for_status()
-        payload = response.json()
-        rows = self._rows(payload)
-        links = payload.get("links") if isinstance(payload, dict) else None
-        next_path = links.get("next") if isinstance(links, dict) else None
-        while next_path:
-            nxt = self._request("GET", next_path)
-            nxt.raise_for_status()
-            p = nxt.json()
-            rows.extend(self._rows(p))
-            links = p.get("links") if isinstance(p, dict) else None
-            next_path = links.get("next") if isinstance(links, dict) else None
-        return rows
+        except requests.HTTPError:
+            reply_rows = []
+
+        if not reply_rows and owner_rows:
+            return owner_rows
+        if not owner_rows:
+            return reply_rows
+
+        owner_by_id = {
+            str(row.get("id") or ""): row.get("owner")
+            for row in owner_rows
+            if row.get("id")
+        }
+
+        merged: list[dict[str, Any]] = []
+        for row in reply_rows:
+            item = dict(row)
+            comment_id = str(item.get("id") or "")
+            if not item.get("owner") and owner_by_id.get(comment_id):
+                item["owner"] = owner_by_id[comment_id]
+            merged.append(item)
+        return merged
 
     @staticmethod
     def flatten_comments(comments: list[dict[str, Any]], *, article_id: str, version_number: int, version_name: str, file_id: str) -> list[dict[str, Any]]:
