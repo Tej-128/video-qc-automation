@@ -9,6 +9,7 @@ import requests
 import streamlit as st
 
 from src.pipeline import run_pipeline
+from src.version import BUILD_LABEL, BUILD_VERSION
 
 ADOBE_AUTHORIZE_URL = "https://ims-na1.adobelogin.com/ims/authorize/v2"
 ADOBE_TOKEN_URL = "https://ims-na1.adobelogin.com/ims/token/v3"
@@ -23,7 +24,7 @@ st.set_page_config(
 )
 
 st.title("Video QC Automation")
-st.caption("Monday.com → Frame.io → OpenAI → two monthly QC reports")
+st.caption("Monday.com → Frame.io → OpenAI → two monthly QC reports")\nst.info(f"Build: **{BUILD_VERSION}** — {BUILD_LABEL}")
 
 
 @st.cache_resource
