@@ -336,7 +336,6 @@ def run_pipeline(
         recoverable = (
             not data_checks.get("frameio_resolution_complete", True)
             or not data_checks.get("classification_coverage_complete", True)
-            or float(data_checks.get("commenter_identity_coverage", 1.0)) < 0.95
         )
         if not recoverable:
             return latest
