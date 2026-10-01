@@ -363,24 +363,121 @@ class FrameIOClient:
 
     def extract_intermediate_comments(self, project: dict[str, str], resolution: Resolution) -> dict[str, Any]:
         if resolution.status != "resolved":
-            return {"project": project, "resolution": resolution, "versions": [], "comments": []}
+            return {
+                "project": project,
+                "resolution": resolution,
+                "versions": [],
+                "comments": [],
+                "extraction_audit": {
+                    "status": "needs_review",
+                    "total_versions": 0,
+                    "eligible_versions": 0,
+                    "checked_versions": 0,
+                    "failed_versions": 0,
+                    "first_version": "",
+                    "final_version": "",
+                    "checked_version_names": [],
+                    "failed_version_names": [],
+                    "comment_count": 0,
+                    "zero_error_verified": False,
+                    "note": resolution.note or "Frame.io project was not resolved.",
+                },
+            }
 
         versions = self.version_children(resolution.account_id, resolution.version_stack_id)
         annotated_versions: list[dict[str, Any]] = []
         all_comments: list[dict[str, Any]] = []
+        checked_version_names: list[str] = []
+        failed_version_names: list[str] = []
+
+        total_versions = len(versions)
+        first_version = self._name(versions[0]) if versions else ""
+        final_version = self._name(versions[-1]) if versions else ""
+        eligible_versions = max(total_versions - 2, 0)
 
         for index, version in enumerate(versions, start=1):
             row = dict(version)
             row["version_number"] = index
-            row["included_for_qc"] = 1 < index < len(versions)
+            row["included_for_qc"] = 1 < index < total_versions
+            row["qc_check_status"] = "excluded"
             annotated_versions.append(row)
 
             if not row["included_for_qc"]:
                 continue
-            file_id = str(version.get("id") or "")
-            if not file_id:
-                continue
-            comments = self.comments_for_file(resolution.account_id, file_id)
-            all_comments.extend(self.flatten_comments(comments, article_id=project.get("article_id", ""), version_number=index, version_name=str(version.get("name") or ""), file_id=file_id))
 
-        return {"project": project, "resolution": resolution, "versions": annotated_versions, "comments": all_comments}
+            file_id = str(version.get("id") or "")
+            version_name = str(version.get("name") or self._name(version) or f"Version {index}")
+
+            if not file_id:
+                row["qc_check_status"] = "failed"
+                row["qc_check_note"] = "Eligible intermediate version had no file id."
+                failed_version_names.append(version_name)
+                continue
+
+            try:
+                comments = self.comments_for_file(resolution.account_id, file_id)
+            except Exception as exc:
+                row["qc_check_status"] = "failed"
+                row["qc_check_note"] = f"{type(exc).__name__}: {exc}"
+                failed_version_names.append(version_name)
+                continue
+
+            row["qc_check_status"] = "checked"
+            row["qc_comment_count"] = len(comments)
+            checked_version_names.append(version_name)
+            all_comments.extend(
+                self.flatten_comments(
+                    comments,
+                    article_id=project.get("article_id", ""),
+                    version_number=index,
+                    version_name=version_name,
+                    file_id=file_id,
+                )
+            )
+
+        checked_versions = len(checked_version_names)
+        failed_versions = len(failed_version_names)
+
+        if eligible_versions == 0:
+            audit_status = "needs_review"
+            audit_note = (
+                "No eligible intermediate Frame.io versions exist between the first and final versions; "
+                "the article cannot be treated as a verified zero-error project."
+            )
+        elif failed_versions:
+            audit_status = "needs_review"
+            audit_note = (
+                f"{failed_versions} of {eligible_versions} eligible intermediate version(s) could not be checked."
+            )
+        elif checked_versions != eligible_versions:
+            audit_status = "needs_review"
+            audit_note = (
+                f"Only {checked_versions} of {eligible_versions} eligible intermediate version(s) were verified."
+            )
+        else:
+            audit_status = "verified"
+            audit_note = (
+                f"All {eligible_versions} eligible intermediate version(s) were checked successfully."
+            )
+
+        return {
+            "project": project,
+            "resolution": resolution,
+            "versions": annotated_versions,
+            "comments": all_comments,
+            "extraction_audit": {
+                "status": audit_status,
+                "total_versions": total_versions,
+                "eligible_versions": eligible_versions,
+                "checked_versions": checked_versions,
+                "failed_versions": failed_versions,
+                "first_version": first_version,
+                "final_version": final_version,
+                "checked_version_names": checked_version_names,
+                "failed_version_names": failed_version_names,
+                "comment_count": len(all_comments),
+                "zero_error_verified": audit_status == "verified" and len(all_comments) == 0,
+                "note": audit_note,
+            },
+        }
+
