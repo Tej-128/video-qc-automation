@@ -1,2 +1,2 @@
-BUILD_VERSION = "QC-V2.4-2026-10-01"
-BUILD_LABEL = "95-percent validated production candidate"
+BUILD_VERSION = "QC-V2.5-2026-10-01"
+BUILD_LABEL = "auditable review-ready production candidate"
