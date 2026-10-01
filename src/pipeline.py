@@ -55,10 +55,39 @@ def _normalize_comment_text(text: str) -> str:
     return " ".join(text.split())
 
 
+def _token_set(text: str) -> set[str]:
+    return {
+        token
+        for token in _normalize_comment_text(text).split()
+        if len(token) >= 4
+    }
+
+
+def _repeat_similarity(current: str, prior: str) -> float:
+    current_norm = _normalize_comment_text(current)
+    prior_norm = _normalize_comment_text(prior)
+    if not current_norm or not prior_norm:
+        return 0.0
+    if current_norm == prior_norm:
+        return 1.0
+
+    seq = SequenceMatcher(None, current_norm, prior_norm).ratio()
+    current_tokens = _token_set(current)
+    prior_tokens = _token_set(prior)
+    if not current_tokens or not prior_tokens:
+        overlap = 0.0
+    else:
+        overlap = len(current_tokens & prior_tokens) / max(
+            min(len(current_tokens), len(prior_tokens)), 1
+        )
+    return max(seq, overlap)
+
+
 def _annotate_repeat_context(bundles: list[dict[str, Any]]) -> None:
     explicit_repeat = re.compile(
         r"\b(previous comment|previous comments|as mentioned before|mentioned earlier|"
-        r"still not|still needs|still need|not addressed|unaddressed|again|same issue)\b",
+        r"still not|still needs|still need|not addressed|unaddressed|same issue|"
+        r"requested earlier|commented earlier)\b",
         re.I,
     )
 
@@ -75,35 +104,60 @@ def _annotate_repeat_context(bundles: list[dict[str, Any]]) -> None:
         for comment in comments:
             version = int(comment.get("version_number") or 0)
             text = str(comment.get("text") or "")
-            normalized = _normalize_comment_text(text)
             best_score = 0.0
             best_text = ""
+            best_version = 0
 
             for prior_version, prior_rows in prior_by_version.items():
                 if prior_version >= version:
                     continue
                 for prior in prior_rows:
                     prior_text = str(prior.get("text") or "")
-                    prior_norm = _normalize_comment_text(prior_text)
-                    if not normalized or not prior_norm:
-                        continue
-                    if normalized == prior_norm:
-                        score = 1.0
-                    elif min(len(normalized), len(prior_norm)) < 20:
-                        score = 0.0
-                    else:
-                        score = SequenceMatcher(None, normalized, prior_norm).ratio()
+                    score = _repeat_similarity(text, prior_text)
                     if score > best_score:
                         best_score = score
                         best_text = prior_text
+                        best_version = prior_version
 
-            repeated = bool(explicit_repeat.search(text)) and version > 2
-            if best_score >= 0.88:
-                repeated = True
+            has_repeat_language = bool(explicit_repeat.search(text)) and version > 2
+
+            # Previous Comments Unaddressed must be supported by both a later
+            # version and evidence that the correction matches earlier feedback.
+            # Explicit "previous" wording alone is not enough.
+            repeated = (
+                version > 2
+                and best_version > 0
+                and (
+                    best_score >= 0.88
+                    or (has_repeat_language and best_score >= 0.55)
+                )
+            )
 
             comment["repeated_from_prior_version"] = repeated
             comment["prior_match_text"] = best_text if repeated else ""
+            comment["prior_match_score"] = round(best_score, 4)
+            comment["prior_match_version"] = best_version if repeated else 0
+            comment["repeat_language_without_match"] = bool(
+                has_repeat_language and not repeated
+            )
             prior_by_version.setdefault(version, []).append(comment)
+
+
+def _unverified_extraction_audit(note: str) -> dict[str, Any]:
+    return {
+        "status": "needs_review",
+        "total_versions": 0,
+        "eligible_versions": 0,
+        "checked_versions": 0,
+        "failed_versions": 0,
+        "first_version": "",
+        "final_version": "",
+        "checked_version_names": [],
+        "failed_version_names": [],
+        "comment_count": 0,
+        "zero_error_verified": False,
+        "note": note,
+    }
 
 
 def _run_pipeline_once(
@@ -153,7 +207,13 @@ def _run_pipeline_once(
                 note="Monday row is missing the Frame.io Review Link.",
             )
             bundles.append(
-                {"project": project, "resolution": resolution, "versions": [], "comments": []}
+                {
+                    "project": project,
+                    "resolution": resolution,
+                    "versions": [],
+                    "comments": [],
+                    "extraction_audit": _unverified_extraction_audit(resolution.note),
+                }
             )
             continue
 
@@ -166,7 +226,13 @@ def _run_pipeline_once(
                 method="frameio_error",
                 note=f"Frame.io extraction failed: {type(exc).__name__}: {exc}",
             )
-            bundle = {"project": project, "resolution": resolution, "versions": [], "comments": []}
+            bundle = {
+                "project": project,
+                "resolution": resolution,
+                "versions": [],
+                "comments": [],
+                "extraction_audit": _unverified_extraction_audit(resolution.note),
+            }
 
         bundles.append(bundle)
 
@@ -239,6 +305,11 @@ def _run_pipeline_once(
         if not bundle.get("resolution") or bundle["resolution"].status != "resolved"
     ]
     needs_review_errors = [row for row in error_rows if row.get("needs_review")]
+    extraction_needs_review = [
+        bundle
+        for bundle in bundles
+        if (bundle.get("extraction_audit") or {}).get("status") != "verified"
+    ]
     classification_failures = [
         row for row in error_rows
         if row.get("team") == "review"
@@ -262,7 +333,13 @@ def _run_pipeline_once(
             "comments_analyzed": len(all_comments),
             "classified_error_rows": len(error_rows),
             "total_error_count": sum(int(row.get("ai_error_count") or 0) for row in error_rows),
-            "needs_review": len(needs_review_errors) + len(unresolved),
+            "needs_review": len(needs_review_errors) + len(extraction_needs_review),
+            "extraction_needs_review": len(extraction_needs_review),
+            "verified_zero_error_projects": sum(
+                1
+                for bundle in bundles
+                if (bundle.get("extraction_audit") or {}).get("zero_error_verified")
+            ),
             "classification_failures": len(classification_failures),
         },
         "qa": qa,
@@ -271,9 +348,18 @@ def _run_pipeline_once(
                 "article_id": (bundle.get("project") or {}).get("article_id", ""),
                 "item_name": (bundle.get("project") or {}).get("item_name", ""),
                 "method": getattr(bundle.get("resolution"), "method", ""),
-                "reason": getattr(bundle.get("resolution"), "note", ""),
+                "reason": (
+                    (bundle.get("extraction_audit") or {}).get("note")
+                    or getattr(bundle.get("resolution"), "note", "")
+                ),
+                "type": (
+                    "Frame.io Resolution"
+                    if not bundle.get("resolution")
+                    or bundle["resolution"].status != "resolved"
+                    else "Extraction Verification"
+                ),
             }
-            for bundle in unresolved
+            for bundle in extraction_needs_review
         ],
         "scripting_report": scripting_report,
         "video_report": video_report,
