@@ -217,8 +217,9 @@ jobs:
               assert wb["Raw Frame.io Comments"].sheet_state == "hidden"
               assert wb["_Validation Lists"].sheet_state == "hidden"
               assert wb["Extraction Audit"].max_row == 3
-              assert wb["Extraction Audit"]["O3"].value == "No"
-              assert wb["Extraction Audit"]["P3"].value == "needs_review"
+              assert wb["Extraction Audit"]["A2"].value == "70000_Example"
+              assert wb["Extraction Audit"]["O2"].value == "No"
+              assert wb["Extraction Audit"]["P2"].value == "needs_review"
               assert wb["Needs Review"].max_row >= 2
 
               if team == "scripting":
