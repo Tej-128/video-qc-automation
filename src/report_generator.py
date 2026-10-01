@@ -756,10 +756,33 @@ def _needs_review_sheet(wb, bundles, error_rows, team):
 
 
 def _error_key(row: dict[str, Any]) -> str:
+    if row.get("source_error_key"):
+        return str(row["source_error_key"])
     return f"{row.get('comment_id', '')}:{row.get('issue_index', 0)}:{row.get('team', '')}"
 
 
+def _validation_lists_sheet(wb):
+    ws = wb.create_sheet("_Validation Lists")
+    ws.append(["Review Actions", "Teams", "Categories"])
+    actions = ["Approve", "Change", "Remove"]
+    teams = ["scripting", "video_editing", "none"]
+    categories = list(SCRIPTING_CATEGORIES) + list(VIDEO_CATEGORIES) + ["None"]
+    max_rows = max(len(actions), len(teams), len(categories))
+    for index in range(max_rows):
+        ws.append([
+            actions[index] if index < len(actions) else "",
+            teams[index] if index < len(teams) else "",
+            categories[index] if index < len(categories) else "",
+        ])
+    ws.sheet_state = "hidden"
+    return {
+        "actions": "'_Validation Lists'!$A$2:$A$" + str(len(actions) + 1),
+        "teams": "'_Validation Lists'!$B$2:$B$" + str(len(teams) + 1),
+        "categories": "'_Validation Lists'!$C$2:$C$" + str(len(categories) + 1),
+    }
+
 def _review_overrides_sheet(wb, error_rows, team):
+    validation_ranges = _validation_lists_sheet(wb)
     ws = wb.create_sheet("Review Overrides")
     headers = [
         "Error Key",
@@ -827,12 +850,11 @@ def _review_overrides_sheet(wb, error_rows, team):
         for column in range(13, 19):
             ws.cell(row_number, column).font = INPUT_FONT
 
-    action_validation = DataValidation(type="list", formula1='"Approve,Change,Remove"', allow_blank=True)
-    team_validation = DataValidation(type="list", formula1='"scripting,video_editing,none"', allow_blank=True)
-    all_categories = list(SCRIPTING_CATEGORIES) + list(VIDEO_CATEGORIES) + ["None"]
+    action_validation = DataValidation(type="list", formula1=validation_ranges["actions"], allow_blank=True)
+    team_validation = DataValidation(type="list", formula1=validation_ranges["teams"], allow_blank=True)
     category_validation = DataValidation(
         type="list",
-        formula1='"' + ",".join(all_categories) + '"',
+        formula1=validation_ranges["categories"],
         allow_blank=True,
     )
     ws.add_data_validation(action_validation)
