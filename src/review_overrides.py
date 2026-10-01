@@ -7,6 +7,7 @@ from typing import Any
 from openpyxl import load_workbook
 
 from src.qc_classifier import SCRIPTING_CATEGORIES, VIDEO_CATEGORIES
+from src.version import BUILD_VERSION
 
 VALID_TEAMS = {"scripting", "video_editing", "none"}
 VALID_ACTIONS = {"Approve", "Change", "Remove"}
@@ -20,6 +21,14 @@ def parse_review_overrides(payload: bytes) -> dict[str, dict[str, Any]]:
     wb = load_workbook(BytesIO(payload), data_only=False)
     if "Review Overrides" not in wb.sheetnames:
         raise ValueError("Reviewed workbook is missing the 'Review Overrides' sheet.")
+    if "_Build Info" not in wb.sheetnames:
+        raise ValueError("Reviewed workbook is missing build metadata.")
+    workbook_build = str(wb["_Build Info"]["B1"].value or "").strip()
+    if workbook_build != BUILD_VERSION:
+        raise ValueError(
+            f"Reviewed workbook build {workbook_build or 'UNKNOWN'} does not match active build {BUILD_VERSION}. "
+            "Use the workbook downloaded from the active run."
+        )
 
     ws = wb["Review Overrides"]
     headers = {
