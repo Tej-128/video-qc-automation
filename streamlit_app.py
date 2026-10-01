@@ -9,6 +9,13 @@ import requests
 import streamlit as st
 
 from src.pipeline import run_pipeline
+from src.qa import audit_run
+from src.report_generator import build_report
+from src.review_overrides import (
+    apply_review_overrides,
+    merge_review_overrides,
+    parse_review_overrides,
+)
 from src.version import BUILD_LABEL, BUILD_VERSION
 
 ADOBE_AUTHORIZE_URL = "https://ims-na1.adobelogin.com/ims/authorize/v2"
@@ -41,6 +48,7 @@ token_store = frameio_token_store()
 if st.session_state.get("_app_build_version") != BUILD_VERSION:
     st.session_state.pop("qc_result", None)
     st.session_state.pop("qc_run_key", None)
+    st.session_state.pop("qc_reviewed_result", None)
     st.session_state["_app_build_version"] = BUILD_VERSION
 
 
@@ -199,7 +207,7 @@ with top_right:
         token_store["access_token"] = None
         token_store["refresh_token"] = None
         st.session_state.pop("oauth_state", None)
-        for key in ("qc_result", "qc_run_key"):
+        for key in ("qc_result", "qc_run_key", "qc_reviewed_result"):
             st.session_state.pop(key, None)
         st.rerun()
 
@@ -264,6 +272,7 @@ if run_clicked:
         status.success("QC reports generated.")
         st.session_state.qc_result = result
         st.session_state.qc_run_key = f"{int(report_year):04d}-{int(report_month):02d}"
+        st.session_state.pop("qc_reviewed_result", None)
 
 result = st.session_state.get("qc_result")
 if result:
@@ -280,27 +289,32 @@ if result:
     m3.metric("Comments analyzed", metrics["comments_analyzed"])
     m4.metric("Errors counted", metrics["total_error_count"])
     m5.metric("Needs review", metrics["needs_review"])
-    m6.metric("QA score", f"{quality_score:.1%}")
+    m6.metric("Structural QA", f"{quality_score:.1%}")
 
     if qa.get("passed"):
         st.success(
-            f"Automated QA passed the 95% target on quality attempt {quality_attempt}. "
-            "Downloads below are release-ready for review."
+            f"Structural/coverage QA passed the 95% target on quality attempt {quality_attempt}. "
+            "The downloads below are ready for team semantic review."
         )
     else:
         st.warning(
-            f"Automated QA stopped at {quality_score:.1%} after quality attempt {quality_attempt}. "
+            f"Structural/coverage QA stopped at {quality_score:.1%} after quality attempt {quality_attempt}. "
             "Downloads are provisional; see the QA findings below."
         )
-        for note in qa.get("notes") or []:
-            st.write(f"• {note}")
-
     if metrics.get("classification_failures", 0):
         st.warning(
             f"{metrics['classification_failures']} comment(s) could not be classified by OpenAI "
             "after retries. The Excel files were still generated, and those comments are listed "
             "in the Needs Review sheet instead of blocking the whole run."
         )
+
+    with st.expander("QA findings and interpretation", expanded=not qa.get("passed", False)):
+        st.write(
+            "This score measures source coverage, extraction verification, workbook structure, "
+            "and deterministic consistency. It is not a semantic classification-accuracy score."
+        )
+        for note in qa.get("notes") or []:
+            st.write(f"• {note}")
 
     prefix = f"{result['year']:04d}_{result['month']:02d}"
     d1, d2 = st.columns(2)
@@ -323,16 +337,136 @@ if result:
             use_container_width=True,
         )
 
+    st.subheader("Team review and finalization")
+    st.caption(
+        "Edit the blue input columns in each workbook's Review Overrides sheet. "
+        "Use Review Action = Approve, Change, or Remove, save the workbook, then upload it here. "
+        "The app regenerates static final reports so all summaries and denominators reflect the reviewed decisions."
+    )
+
+    review_col1, review_col2 = st.columns(2)
+    with review_col1:
+        reviewed_scripting = st.file_uploader(
+            "Reviewed Scripting QC workbook",
+            type=["xlsx"],
+            key=f"review_scripting_{st.session_state.get('qc_run_key', '')}",
+        )
+    with review_col2:
+        reviewed_video = st.file_uploader(
+            "Reviewed Video Editing QC workbook",
+            type=["xlsx"],
+            key=f"review_video_{st.session_state.get('qc_run_key', '')}",
+        )
+
+    if st.button(
+        "Apply Review Overrides & Regenerate Final Reports",
+        use_container_width=True,
+    ):
+        try:
+            override_maps = []
+            if reviewed_scripting is not None:
+                override_maps.append(parse_review_overrides(reviewed_scripting.getvalue()))
+            if reviewed_video is not None:
+                override_maps.append(parse_review_overrides(reviewed_video.getvalue()))
+
+            if not override_maps:
+                st.warning("Upload at least one reviewed QC workbook first.")
+            else:
+                overrides = merge_review_overrides(*override_maps)
+                if not overrides:
+                    st.warning(
+                        "No Review Action values were found. Enter Approve, Change, or Remove "
+                        "for the rows you reviewed, save the workbook, and upload it again."
+                    )
+                else:
+                    reviewed_rows, review_stats = apply_review_overrides(
+                        result["error_rows"],
+                        result["bundles"],
+                        overrides,
+                    )
+                    reviewed_scripting_report = build_report(
+                        team="scripting",
+                        year=result["year"],
+                        month=result["month"],
+                        projects=result["projects"],
+                        bundles=result["bundles"],
+                        error_rows=reviewed_rows,
+                        review_applied=True,
+                    )
+                    reviewed_video_report = build_report(
+                        team="video_editing",
+                        year=result["year"],
+                        month=result["month"],
+                        projects=result["projects"],
+                        bundles=result["bundles"],
+                        error_rows=reviewed_rows,
+                        review_applied=True,
+                    )
+                    reviewed_qa = audit_run(
+                        projects=result["projects"],
+                        bundles=result["bundles"],
+                        classifications=result.get("classifications") or [],
+                        error_rows=reviewed_rows,
+                        scripting_report=reviewed_scripting_report,
+                        video_report=reviewed_video_report,
+                    )
+                    st.session_state.qc_reviewed_result = {
+                        "scripting_report": reviewed_scripting_report,
+                        "video_report": reviewed_video_report,
+                        "review_stats": review_stats,
+                        "qa": reviewed_qa,
+                    }
+                    st.success(
+                        f"Applied {review_stats['applied']} reviewed decision(s) and regenerated both final reports."
+                    )
+        except Exception as exc:
+            st.error(f"Could not apply review overrides: {type(exc).__name__}: {exc}")
+
+    reviewed_result = st.session_state.get("qc_reviewed_result")
+    if reviewed_result:
+        review_stats = reviewed_result["review_stats"]
+        agreement = review_stats.get("reviewed_ai_agreement")
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Reviewed rows", review_stats["applied"])
+        r2.metric("AI approved", review_stats["approved"])
+        r3.metric("Changed/removed", review_stats["changed"] + review_stats["removed"])
+        r4.metric(
+            "Reviewed-row AI agreement",
+            f"{agreement:.1%}" if agreement is not None else "N/A",
+        )
+        st.caption(
+            "Reviewed-row AI agreement is measured only on rows the reviewer explicitly acted on. "
+            "It is not a claim about unreviewed comments."
+        )
+
+        fd1, fd2 = st.columns(2)
+        with fd1:
+            st.download_button(
+                "Download FINAL Scripting QC Report",
+                data=reviewed_result["scripting_report"],
+                file_name=f"{prefix}_Scripting_QC_FINAL.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        with fd2:
+            st.download_button(
+                "Download FINAL Video Editing QC Report",
+                data=reviewed_result["video_report"],
+                file_name=f"{prefix}_Video_Editing_QC_FINAL.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
     if result["unresolved"]:
         st.warning(
-            f"{len(result['unresolved'])} project(s) could not be uniquely resolved in Frame.io. "
-            "They are also listed in the Needs Review sheet and were not guessed."
+            f"{len(result['unresolved'])} project(s) require Frame.io/extraction verification. "
+            "They are listed in Needs Review and excluded from performance denominators until verified."
         )
         st.dataframe(result["unresolved"], use_container_width=True, hide_index=True)
     else:
-        st.success("All monthly Monday projects were resolved to Frame.io.")
+        st.success("All monthly Monday projects have verified Frame.io extraction coverage.")
 
     st.caption(
-        "Each workbook includes a Needs Review tab, hidden Error Detail / raw Frame.io audit tabs, "
-        "and hidden build metadata so every download can be traced to the deployed QC version."
+        "Each workbook includes Extraction Audit, Needs Review, and Review Overrides tabs, plus hidden "
+        "Error Detail / raw Frame.io audit tabs and hidden build metadata for traceability."
     )
