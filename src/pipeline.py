@@ -326,6 +326,7 @@ def _run_pipeline_once(
         "projects": projects,
         "bundles": bundles,
         "error_rows": error_rows,
+        "classifications": classifications,
         "metrics": {
             "monthly_projects": len(projects),
             "frameio_resolved": len(resolved),
