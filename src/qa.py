@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections import Counter
 from io import BytesIO
 from typing import Any
 
 from openpyxl import load_workbook
 
 from src.qc_classifier import SCRIPTING_CATEGORIES, VIDEO_CATEGORIES
+from src.report_generator import _performance_eligible_article_ids
 from src.version import BUILD_VERSION
 
 
@@ -35,11 +35,44 @@ def _expected_main_headers(team: str) -> list[str]:
     return headers
 
 
+def _main_is_sorted(ws) -> bool:
+    values = []
+    for row in range(2, ws.max_row + 1):
+        value = ws.cell(row, 3).value
+        values.append((value, str(ws.cell(row, 1).value or "")))
+    return values == sorted(values, key=lambda item: (item[0], item[1]))
+
+
+def _review_headers_ok(ws) -> bool:
+    required = {
+        "Error Key",
+        "Article Number",
+        "Version",
+        "Timecode",
+        "Frame.io Review Link",
+        "Comment",
+        "AI Team",
+        "AI Category",
+        "AI Assignee",
+        "AI Count",
+        "AI Needs Review",
+        "AI Performance Eligible",
+        "Review Action",
+        "Manual Team",
+        "Manual Category",
+        "Manual Assignee",
+        "Manual Count",
+        "Reviewer Notes",
+    }
+    return required.issubset(set(_sheet_headers(ws)))
+
+
 def audit_workbook(
     payload: bytes,
     *,
     team: str,
     projects: list[dict[str, Any]],
+    bundles: list[dict[str, Any]],
     error_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     wb = load_workbook(BytesIO(payload), data_only=False)
@@ -51,7 +84,9 @@ def audit_workbook(
         "Description",
         "Monthly Trend",
         "Analysis Guide",
+        "Extraction Audit",
         "Needs Review",
+        "Review Overrides",
         "Error Detail",
         "Raw Frame.io Comments",
         "_Build Info",
@@ -72,6 +107,8 @@ def audit_workbook(
         ws = wb[main_sheet]
         checks["main_headers"] = _sheet_headers(ws) == _expected_main_headers(team)
         checks["project_row_count"] = ws.max_row - 1 == len(projects)
+        checks["main_date_sort"] = _main_is_sorted(ws)
+
         expected_total = sum(
             int(row.get("ai_error_count") or 0)
             for row in error_rows
@@ -90,6 +127,7 @@ def audit_workbook(
     else:
         checks["main_headers"] = False
         checks["project_row_count"] = False
+        checks["main_date_sort"] = False
         checks["main_total_consistency"] = False
 
     if "Description" in wb.sheetnames:
@@ -114,14 +152,36 @@ def audit_workbook(
     else:
         checks["build_metadata"] = False
 
+    if "Extraction Audit" in wb.sheetnames:
+        audit_ws = wb["Extraction Audit"]
+        checks["extraction_audit_row_count"] = audit_ws.max_row - 1 == len(projects)
+        link_ok = True
+        for row in range(2, audit_ws.max_row + 1):
+            value = str(audit_ws.cell(row, 2).value or "")
+            if value and not audit_ws.cell(row, 2).hyperlink:
+                link_ok = False
+                break
+        checks["extraction_links"] = link_ok
+    else:
+        checks["extraction_audit_row_count"] = False
+        checks["extraction_links"] = False
+
     if "Needs Review" in wb.sheetnames:
         nr = wb["Needs Review"]
-        valid_team_rows = True
-        # Team separation is guaranteed by the report generator; here we only
-        # ensure the tab exists and is structurally populated when needed.
-        checks["needs_review_structure"] = nr.max_column >= 8 and valid_team_rows
+        checks["needs_review_structure"] = nr.max_column >= 11
     else:
         checks["needs_review_structure"] = False
+
+    if "Review Overrides" in wb.sheetnames:
+        checks["review_workflow_structure"] = _review_headers_ok(wb["Review Overrides"])
+    else:
+        checks["review_workflow_structure"] = False
+
+    if "Monthly Trend" in wb.sheetnames:
+        trend_header = str(wb["Monthly Trend"]["A1"].value or "")
+        checks["trend_scope_labelled"] = "selected" in trend_header.casefold()
+    else:
+        checks["trend_scope_labelled"] = False
 
     if team == "video_editing" and "Common Error Patterns" in wb.sheetnames:
         patterns = wb["Common Error Patterns"]
@@ -136,6 +196,20 @@ def audit_workbook(
     else:
         checks["recurring_patterns_only"] = True
 
+    eligible_ids = _performance_eligible_article_ids(
+        projects, bundles, error_rows, team
+    )
+    summary_name = "Writer Summary" if team == "scripting" else "Editor Summary"
+    if summary_name in wb.sheetnames:
+        summary = wb[summary_name]
+        workbook_articles = sum(
+            int(summary.cell(row, 2).value or 0)
+            for row in range(2, summary.max_row + 1)
+        )
+        checks["performance_denominator_consistency"] = workbook_articles == len(eligible_ids)
+    else:
+        checks["performance_denominator_consistency"] = False
+
     passed = sum(1 for value in checks.values() if value)
     score = passed / max(len(checks), 1)
 
@@ -144,6 +218,7 @@ def audit_workbook(
         "score": score,
         "checks": checks,
         "notes": notes,
+        "performance_eligible_articles": len(eligible_ids),
     }
 
 
@@ -161,11 +236,17 @@ def audit_run(
         for bundle in bundles
         for comment in (bundle.get("comments") or [])
     ]
+
     resolved_projects = [
         bundle
         for bundle in bundles
         if bundle.get("resolution") is not None
         and getattr(bundle["resolution"], "status", "") == "resolved"
+    ]
+    extraction_verified = [
+        bundle
+        for bundle in bundles
+        if (bundle.get("extraction_audit") or {}).get("status") == "verified"
     ]
 
     classification_failures = [
@@ -176,10 +257,37 @@ def audit_run(
         1 for row in comments if str(row.get("commenter") or "").strip()
     )
 
+    comment_ids = [
+        str(row.get("comment_id") or "")
+        for row in comments
+        if row.get("comment_id")
+    ]
+
+    zero_error_policy_ok = True
+    version_exclusion_ok = True
+    for bundle in bundles:
+        audit = bundle.get("extraction_audit") or {}
+        bundle_comments = bundle.get("comments") or []
+        if not bundle_comments and audit.get("zero_error_verified"):
+            if audit.get("status") != "verified" or int(audit.get("eligible_versions") or 0) <= 0:
+                zero_error_policy_ok = False
+
+        versions = bundle.get("versions") or []
+        if versions:
+            for index, version in enumerate(versions):
+                expected = 0 < index < len(versions) - 1
+                if bool(version.get("included_for_qc")) != expected:
+                    version_exclusion_ok = False
+                    break
+
     data_checks = {
         "projects_present": bool(projects),
         "frameio_resolution_complete": len(resolved_projects) == len(projects),
+        "extraction_verification_complete": len(extraction_verified) == len(projects),
         "classification_coverage_complete": len(classification_failures) == 0,
+        "comment_ids_unique": len(comment_ids) == len(set(comment_ids)),
+        "version_exclusion_policy": version_exclusion_ok,
+        "zero_error_policy": zero_error_policy_ok,
         "commenter_identity_coverage": (
             (commenter_count / len(comments)) if comments else 1.0
         ),
@@ -189,29 +297,37 @@ def audit_run(
         scripting_report,
         team="scripting",
         projects=projects,
+        bundles=bundles,
         error_rows=error_rows,
     )
     video = audit_workbook(
         video_report,
         team="video_editing",
         projects=projects,
+        bundles=bundles,
         error_rows=error_rows,
     )
 
     binary_checks = [
         data_checks["projects_present"],
         data_checks["frameio_resolution_complete"],
+        data_checks["extraction_verification_complete"],
         data_checks["classification_coverage_complete"],
+        data_checks["comment_ids_unique"],
+        data_checks["version_exclusion_policy"],
+        data_checks["zero_error_policy"],
         *scripting["checks"].values(),
         *video["checks"].values(),
     ]
-    binary_score = sum(1 for value in binary_checks if value) / max(len(binary_checks), 1)
-    commenter_score = float(data_checks["commenter_identity_coverage"])
+    structural_score = sum(1 for value in binary_checks if value) / max(len(binary_checks), 1)
 
-    # 95% is a quality gate, not an expected-output hardcode:
-    # 90% of the score is deterministic source/report consistency,
-    # 10% is audit identity completeness.
-    overall_score = (0.90 * binary_score) + (0.10 * commenter_score)
+    critical_pass = (
+        data_checks["frameio_resolution_complete"]
+        and data_checks["extraction_verification_complete"]
+        and data_checks["classification_coverage_complete"]
+        and data_checks["version_exclusion_policy"]
+        and data_checks["zero_error_policy"]
+    )
 
     notes = [*scripting["notes"], *video["notes"]]
     if classification_failures:
@@ -222,15 +338,28 @@ def audit_run(
         notes.append(
             f"{len(projects) - len(resolved_projects)} project(s) remain unresolved in Frame.io."
         )
-    if comments and commenter_score < 0.95:
+    if len(extraction_verified) != len(projects):
         notes.append(
-            f"Commenter identity coverage is {commenter_score:.1%}; audit metadata is incomplete."
+            f"{len(projects) - len(extraction_verified)} project(s) do not have fully verified intermediate-version extraction and are excluded from performance denominators."
         )
 
+    commenter_score = float(data_checks["commenter_identity_coverage"])
+    if comments and commenter_score < 0.95:
+        notes.append(
+            f"Commenter identity coverage is {commenter_score:.1%}; this is audit metadata only and does not count as semantic classification accuracy."
+        )
+
+    notes.append(
+        "Structural QA does not measure semantic classification accuracy. Semantic accuracy is established through the Review Overrides workflow and reviewer agreement."
+    )
+
     return {
-        "score": overall_score,
+        "score": structural_score,
+        "score_type": "structural_and_coverage",
         "target": 0.95,
-        "passed": overall_score >= 0.95,
+        "passed": structural_score >= 0.95 and critical_pass,
+        "critical_pass": critical_pass,
+        "semantic_accuracy": None,
         "data_checks": data_checks,
         "scripting": scripting,
         "video": video,
