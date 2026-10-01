@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import secrets
 from datetime import date, timedelta
 from urllib.parse import urlencode
@@ -23,6 +24,7 @@ ADOBE_TOKEN_URL = "https://ims-na1.adobelogin.com/ims/token/v3"
 FRAMEIO_BASE_URL = "https://api.frame.io/v4"
 REDIRECT_URI = "https://video-qc-automation-abmjs82sxu76zjmt26beda.streamlit.app"
 SCOPES = "offline_access,openid,email,profile,additional_info.roles"
+SOURCE_VERSION_URL = "https://raw.githubusercontent.com/Tej-128/video-qc-automation/main/src/version.py"
 
 st.set_page_config(
     page_title="Video QC Automation",
@@ -33,6 +35,30 @@ st.set_page_config(
 st.title("Video QC Automation")
 st.caption("Monday.com → Frame.io → OpenAI → two monthly QC reports")
 st.info(f"Build: **{BUILD_VERSION}** — {BUILD_LABEL}")
+
+
+@st.cache_data(ttl=60)
+def github_source_build_version() -> str | None:
+    try:
+        response = requests.get(SOURCE_VERSION_URL, timeout=8)
+        response.raise_for_status()
+        match = re.search(r'BUILD_VERSION\\s*=\\s*["\\\']([^"\\\']+)["\\\']', response.text)
+        return match.group(1) if match else None
+    except Exception:
+        return None
+
+
+source_version = github_source_build_version()
+if source_version and source_version != BUILD_VERSION:
+    st.error(
+        f"This Streamlit worker is stale: deployed build is {BUILD_VERSION}, "
+        f"but GitHub main is {source_version}. Reboot the app before running QC."
+    )
+    st.stop()
+elif source_version == BUILD_VERSION:
+    st.caption(f"Deployment sync: ✅ matches GitHub main ({BUILD_VERSION})")
+else:
+    st.caption("Deployment sync: GitHub source check unavailable; build banner remains authoritative.")
 
 
 @st.cache_resource
@@ -292,14 +318,21 @@ if result:
     m6.metric("Structural QA", f"{quality_score:.1%}")
 
     if qa.get("passed"):
-        st.success(
-            f"Structural/coverage QA passed the 95% target on quality attempt {quality_attempt}. "
-            "The downloads below are ready for team semantic review."
-        )
+        if metrics.get("needs_review", 0):
+            st.success(
+                f"Structural/coverage QA passed the 95% target on quality attempt {quality_attempt}. "
+                "The downloads are safe to share with the team for review; unresolved items are explicitly "
+                "listed and excluded from performance denominators until reviewed."
+            )
+        else:
+            st.success(
+                f"Structural/coverage QA passed the 95% target on quality attempt {quality_attempt}, "
+                "with no Needs Review items. The downloads are ready to share."
+            )
     else:
         st.warning(
             f"Structural/coverage QA stopped at {quality_score:.1%} after quality attempt {quality_attempt}. "
-            "Downloads are provisional; see the QA findings below."
+            "Do not share these as final performance reports; use them only for diagnosis until the QA findings are cleared."
         )
     if metrics.get("classification_failures", 0):
         st.warning(
