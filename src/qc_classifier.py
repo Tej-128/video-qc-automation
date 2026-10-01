@@ -81,9 +81,9 @@ Rules:
 1. Analyze every supplied comment, including replies, but do not count acknowledgements, questions, confirmations, or conversational replies as errors unless they clearly contain a new QC correction.
 2. One comment may contain multiple independent corrections. Split them into separate issue objects when categories differ. If a comment clearly identifies multiple occurrences of the same error type, keep one issue object and set error_count to the explicit or clearly implied number; otherwise use 1.
 3. Use ONLY the category definitions above. Do not broaden or invent category definitions.
-4. Scripting means the underlying script/content/instruction is wrong. Video editing means the script may be acceptable but the audiovisual execution is wrong.
+4. Scripting means the underlying script/content/instruction is wrong. Video editing means the underlying instruction is acceptable but its audiovisual execution is wrong. A requested change to narration wording, scientific/procedural wording, terminology, measurements, or the content that should have been scripted is scripting unless the comment clearly says the script/instruction was already correct and the editor/VO execution failed to follow it.
 5. Hashtags are supporting evidence, not a substitute for analyzing the actual error. If #scripting or #video_editing is explicitly present, treat it as a strong attribution hint because those labels were proposed for team attribution. Other operational tags such as #video or #audio must not by themselves decide who introduced the error.
-6. If repeated_from_prior_version=true, classify that later-version correction as video_editing / Previous Comments Unaddressed. Do not also double-count the same correction under its underlying category.
+6. Use Previous Comments Unaddressed ONLY when repeated_from_prior_version=true. That flag is created by deterministic cross-version comparison. If repeat_language_without_match=true but repeated_from_prior_version=false, classify the actual underlying issue instead and set needs_review=true because the wording references an earlier version without enough matching evidence.
 7. If there is no genuine QC error, return an empty issues array.
 8. If the team or category is ambiguous, choose the most plausible one but set needs_review=true and lower confidence.
 9. Never invent facts outside the comment text and supplied metadata.
@@ -125,6 +125,9 @@ def _classify_batch(
                 "text": row.get("text", ""),
                 "repeated_from_prior_version": bool(row.get("repeated_from_prior_version")),
                 "prior_match_text": row.get("prior_match_text", ""),
+                "prior_match_score": row.get("prior_match_score", 0),
+                "prior_match_version": row.get("prior_match_version", 0),
+                "repeat_language_without_match": bool(row.get("repeat_language_without_match")),
             }
         )
     expected_keys = set(key_to_comment_id)
@@ -311,6 +314,9 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
         distinct_editors = [x for i, x in enumerate(editors) if x and x not in editors[:i]]
         primary_editor = project.get("science_video_editor") or project.get("finishing_editor") or project.get("rough_editor") or ""
         handover = len(distinct_editors) > 1
+        extraction_audit = project_bundle.get("extraction_audit") or {}
+        extraction_verified = extraction_audit.get("status") == "verified"
+        extraction_note = str(extraction_audit.get("note") or "")
 
         for comment in project_bundle.get("comments") or []:
             comment_id = str(comment.get("comment_id") or "")
@@ -340,7 +346,10 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     "confidence": 0.0,
                     "needs_review": True,
                     "performance_eligible": False,
-                    "classification_reason": classification_errors[comment_id],
+                    "classification_reason": (
+                        classification_errors[comment_id]
+                        + (f" | Extraction audit: {extraction_note}" if not extraction_verified and extraction_note else "")
+                    ),
                     "pattern_label": "",
                     "ai_assignee": "",
                     "scriptwriter": project.get("scriptwriter", ""),
@@ -366,8 +375,20 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     attribution_review = handover or not bool(assignee)
 
                 confidence = float(issue.get("confidence") or 0)
-                needs_review = bool(issue.get("needs_review")) or confidence < 0.78 or attribution_review
-                performance_eligible = bool(assignee) and not needs_review
+                needs_review = (
+                    bool(issue.get("needs_review"))
+                    or confidence < 0.78
+                    or attribution_review
+                    or not extraction_verified
+                )
+                performance_eligible = bool(assignee) and not needs_review and extraction_verified
+
+                classification_reason = str(issue.get("reason", "") or "")
+                if not extraction_verified and extraction_note:
+                    classification_reason = (
+                        classification_reason + (" | " if classification_reason else "")
+                        + f"Extraction audit: {extraction_note}"
+                    )
 
                 error_rows.append({
                     "article_id": project.get("article_id", ""),
@@ -394,7 +415,7 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     "confidence": confidence,
                     "needs_review": needs_review,
                     "performance_eligible": performance_eligible,
-                    "classification_reason": issue.get("reason", ""),
+                    "classification_reason": classification_reason,
                     "pattern_label": issue.get("pattern_label", ""),
                     "ai_assignee": assignee,
                     "scriptwriter": project.get("scriptwriter", ""),
