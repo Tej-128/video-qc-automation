@@ -315,6 +315,16 @@ def _run_pipeline_once(
         if row.get("team") == "review"
         and row.get("error_summary") == "OpenAI classification failed for this comment"
     ]
+    review_project_ids = {
+        str(row.get("article_id") or "")
+        for row in needs_review_errors
+        if row.get("article_id")
+    }
+    review_project_ids.update(
+        str((bundle.get("project") or {}).get("article_id") or "")
+        for bundle in extraction_needs_review
+        if (bundle.get("project") or {}).get("article_id")
+    )
 
     _notify(progress_callback, "Reports ready.", 1.0)
 
@@ -333,8 +343,18 @@ def _run_pipeline_once(
             "frameio_unresolved": len(unresolved),
             "comments_analyzed": len(all_comments),
             "classified_error_rows": len(error_rows),
-            "total_error_count": sum(int(row.get("ai_error_count") or 0) for row in error_rows),
+            "total_error_count": sum(
+                int(row.get("ai_error_count") or 0)
+                for row in error_rows
+                if row.get("team") in {"scripting", "video_editing"}
+            ),
+            "unassigned_review_error_count": sum(
+                int(row.get("ai_error_count") or 0)
+                for row in error_rows
+                if row.get("team") == "review"
+            ),
             "needs_review": len(needs_review_errors) + len(extraction_needs_review),
+            "review_projects": len(review_project_ids),
             "extraction_needs_review": len(extraction_needs_review),
             "verified_zero_error_projects": sum(
                 1

@@ -361,7 +361,53 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
             for issue_index, issue in enumerate(by_comment.get(comment_id, []), start=1):
                 team = issue.get("team", "none")
                 category = issue.get("category", "None")
-                if team == "none" or category == "None" or int(issue.get("error_count") or 0) <= 0:
+                error_count = int(issue.get("error_count") or 0)
+                if team == "none" or category == "None" or error_count <= 0:
+                    continue
+
+                valid_pair = (
+                    (team == "scripting" and category in SCRIPTING_CATEGORIES)
+                    or (team == "video_editing" and category in VIDEO_CATEGORIES)
+                )
+                if not valid_pair:
+                    error_rows.append({
+                        "article_id": project.get("article_id", ""),
+                        "item_name": project.get("item_name", ""),
+                        "date_video_released": project.get("date_video_released", ""),
+                        "draft_script_sent": project.get("draft_script_sent", ""),
+                        "frameio_review_link": project.get("frameio_review_link", ""),
+                        "resolution_method": resolution.method,
+                        "asset_name": resolution.asset_name,
+                        "version_number": comment.get("version_number"),
+                        "version_name": comment.get("version_name", ""),
+                        "comment_id": comment.get("comment_id", ""),
+                        "parent_comment_id": comment.get("parent_comment_id", ""),
+                        "is_reply": bool(comment.get("is_reply")),
+                        "commenter": comment.get("commenter", ""),
+                        "comment_created_at": comment.get("created_at", ""),
+                        "timecode": comment.get("timestamp", ""),
+                        "comment_text": comment.get("text", ""),
+                        "issue_index": issue_index,
+                        "team": "review",
+                        "ai_category": category,
+                        "error_summary": issue.get("error_summary", ""),
+                        "ai_error_count": error_count,
+                        "confidence": float(issue.get("confidence") or 0),
+                        "needs_review": True,
+                        "performance_eligible": False,
+                        "classification_reason": (
+                            f"AI returned an invalid team/category pair: {team} / {category}. "
+                            "Manual team/category review is required."
+                        ),
+                        "pattern_label": issue.get("pattern_label", ""),
+                        "ai_assignee": "",
+                        "model_team": team,
+                        "model_category": category,
+                        "scriptwriter": project.get("scriptwriter", ""),
+                        "science_video_editor": project.get("science_video_editor", ""),
+                        "finishing_editor": project.get("finishing_editor", ""),
+                        "rough_editor": project.get("rough_editor", ""),
+                    })
                     continue
 
                 if team == "scripting":
@@ -381,7 +427,15 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     or attribution_review
                     or not extraction_verified
                 )
-                performance_eligible = bool(assignee) and not needs_review and extraction_verified
+                # Category/wording uncertainty remains visible in Needs Review, but
+                # a verified project with a clear contributor is counted provisionally.
+                # Attribution blockers (handover/missing contributor) and extraction
+                # uncertainty remain excluded until resolved.
+                performance_eligible = (
+                    bool(assignee)
+                    and extraction_verified
+                    and not attribution_review
+                )
 
                 classification_reason = str(issue.get("reason", "") or "")
                 if not extraction_verified and extraction_note:

@@ -296,6 +296,19 @@ def audit_run(
         or unverified_article_ids & video_eligible
     )
 
+    invalid_team_category_rows = [
+        row
+        for row in error_rows
+        if (
+            row.get("team") == "scripting"
+            and row.get("ai_category") not in SCRIPTING_CATEGORIES
+        )
+        or (
+            row.get("team") == "video_editing"
+            and row.get("ai_category") not in VIDEO_CATEGORIES
+        )
+    ]
+
     data_checks = {
         "projects_present": bool(projects),
         "frameio_resolution_complete": len(resolved_projects) == len(projects),
@@ -305,6 +318,7 @@ def audit_run(
         "version_exclusion_policy": version_exclusion_ok,
         "zero_error_policy": zero_error_policy_ok,
         "unverified_excluded_from_performance": unverified_excluded,
+        "team_category_consistency": len(invalid_team_category_rows) == 0,
         "commenter_identity_coverage": (
             (commenter_count / len(comments)) if comments else 1.0
         ),
@@ -334,6 +348,7 @@ def audit_run(
         data_checks["version_exclusion_policy"],
         data_checks["zero_error_policy"],
         data_checks["unverified_excluded_from_performance"],
+        data_checks["team_category_consistency"],
         *scripting["checks"].values(),
         *video["checks"].values(),
     ]
@@ -345,9 +360,45 @@ def audit_run(
         and data_checks["version_exclusion_policy"]
         and data_checks["zero_error_policy"]
         and data_checks["unverified_excluded_from_performance"]
+        and data_checks["team_category_consistency"]
     )
 
     notes = [*scripting["notes"], *video["notes"]]
+    if invalid_team_category_rows:
+        examples = ", ".join(
+            f"{row.get('item_name') or row.get('article_id')}: {row.get('team')} / {row.get('ai_category')}"
+            for row in invalid_team_category_rows[:5]
+        )
+        notes.append(
+            f"{len(invalid_team_category_rows)} invalid team/category pair(s) were detected: {examples}."
+        )
+
+    missing_scriptwriters = [
+        project.get("item_name") or project.get("article_id")
+        for project in projects
+        if not str(project.get("scriptwriter") or "").strip()
+    ]
+    video_handovers = [
+        project.get("item_name") or project.get("article_id")
+        for project in projects
+        if len({
+            str(project.get("science_video_editor") or "").strip(),
+            str(project.get("finishing_editor") or "").strip(),
+            str(project.get("rough_editor") or "").strip(),
+        } - {""}) > 1
+    ]
+    if missing_scriptwriters:
+        notes.append(
+            f"{len(missing_scriptwriters)} project(s) have no Scriptwriter in Monday.com and are excluded from individual writer performance: "
+            + ", ".join(missing_scriptwriters[:10])
+            + ("." if len(missing_scriptwriters) <= 10 else ", ...")
+        )
+    if video_handovers:
+        notes.append(
+            f"{len(video_handovers)} project(s) have multiple video editors in Monday.com and require individual attribution review: "
+            + ", ".join(video_handovers[:10])
+            + ("." if len(video_handovers) <= 10 else ", ...")
+        )
     if classification_failures:
         notes.append(
             f"{len(classification_failures)} comment(s) remain unclassified after recovery."

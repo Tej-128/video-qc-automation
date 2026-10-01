@@ -33,8 +33,9 @@ jobs:
           python - <<'PY'
           from src.frameio_client import FrameIOClient
           from src.pipeline import run_pipeline
-          from src.qc_classifier import classify_comments
+          from src.qc_classifier import attach_classifications, classify_comments
           from src.report_generator import build_report
+          from src.qc_classifier import attach_classifications
           from src.review_overrides import parse_review_overrides, apply_review_overrides
           from src.qa import audit_run
           print("Production modules imported successfully.")
@@ -302,5 +303,50 @@ jobs:
           assert qa["data_checks"]["unverified_excluded_from_performance"] is True
           assert qa["data_checks"]["extraction_verification_complete"] is False
           assert qa["passed"] is True
+
+          # Invalid model team/category pairs must never leak into a team workbook.
+          mismatch_classifications = [{
+              "comment_id": "c1",
+              "issues": [{
+                  "team": "scripting",
+                  "category": "Result Section",
+                  "error_summary": "Swap result highlights",
+                  "error_count": 1,
+                  "confidence": 0.95,
+                  "needs_review": False,
+                  "reason": "Synthetic mismatch regression.",
+                  "pattern_label": "Highlighting issue",
+              }],
+          }]
+          mismatch_rows = attach_classifications(
+              [bundles[0]],
+              mismatch_classifications,
+          )
+          assert len(mismatch_rows) == 1
+          assert mismatch_rows[0]["team"] == "review"
+          assert mismatch_rows[0]["performance_eligible"] is False
+
+          # A semantically uncertain row with a clear contributor remains counted
+          # provisionally while still appearing in Needs Review.
+          reviewable_classifications = [{
+              "comment_id": "c1",
+              "issues": [{
+                  "team": "scripting",
+                  "category": "Scientific Formatting",
+                  "error_summary": "Italicize scientific name",
+                  "error_count": 1,
+                  "confidence": 0.90,
+                  "needs_review": True,
+                  "reason": "Synthetic reviewable ambiguity.",
+                  "pattern_label": "Scientific formatting",
+              }],
+          }]
+          reviewable_rows = attach_classifications(
+              [bundles[0]],
+              reviewable_classifications,
+          )
+          assert reviewable_rows[0]["needs_review"] is True
+          assert reviewable_rows[0]["performance_eligible"] is True
+
           print("QC smoke tests passed.")
           PY

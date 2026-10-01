@@ -160,17 +160,15 @@ def _performance_eligible_article_ids(
     team: str,
 ) -> set[str]:
     bundle_by_article = _bundle_map(bundles)
-    unresolved_by_article: set[str] = set()
+    blocked_by_article: set[str] = set()
 
     for row in error_rows:
         article_id = str(row.get("article_id") or "")
         row_team = row.get("team")
         if row_team == "review":
-            unresolved_by_article.add(article_id)
-        elif row_team == team and (
-            row.get("needs_review") or not row.get("performance_eligible", True)
-        ):
-            unresolved_by_article.add(article_id)
+            blocked_by_article.add(article_id)
+        elif row_team == team and not row.get("performance_eligible", True):
+            blocked_by_article.add(article_id)
 
     eligible: set[str] = set()
     for project in projects:
@@ -180,10 +178,31 @@ def _performance_eligible_article_ids(
             continue
         if not _extraction_verified(bundle_by_article.get(article_id)):
             continue
-        if article_id in unresolved_by_article:
+        if article_id in blocked_by_article:
             continue
         eligible.add(article_id)
     return eligible
+
+
+def _team_trend_eligible_article_ids(
+    projects: list[dict[str, Any]],
+    bundles: list[dict[str, Any]],
+    error_rows: list[dict[str, Any]],
+) -> set[str]:
+    bundle_by_article = _bundle_map(bundles)
+    blocked_by_article = {
+        str(row.get("article_id") or "")
+        for row in error_rows
+        if row.get("team") == "review"
+    }
+    return {
+        str(project.get("article_id") or "")
+        for project in projects
+        if _extraction_verified(
+            bundle_by_article.get(str(project.get("article_id") or ""))
+        )
+        and str(project.get("article_id") or "") not in blocked_by_article
+    }
 
 
 def _main_sheet(wb, projects, bundles, error_rows, team):
@@ -268,8 +287,19 @@ def _main_sheet(wb, projects, bundles, error_rows, team):
                 "QC Automation",
             )
 
-        if team == "video_editing" and _article_contributor(project, team) == "Needs Review":
+        contributor = _article_contributor(project, team)
+        if not contributor:
             ws.cell(row_number, 2).fill = CAUTION_FILL
+            ws.cell(row_number, 2).comment = Comment(
+                "Contributor is missing in Monday.com. This article is excluded from individual contributor performance until the source assignment is corrected.",
+                "QC Automation",
+            )
+        elif team == "video_editing" and contributor == "Needs Review":
+            ws.cell(row_number, 2).fill = CAUTION_FILL
+            ws.cell(row_number, 2).comment = Comment(
+                "Multiple video editors are assigned in Monday.com. Article-level QC remains visible, but individual editor attribution requires review.",
+                "QC Automation",
+            )
 
     return ws
 
@@ -309,13 +339,13 @@ def _monthly_trend_sheet(wb, projects, bundles, error_rows, team):
     cfg = _team_config(team)
     categories = _category_config(team)
     ws = wb.create_sheet("Monthly Trend")
-    headers = [cfg["trend_month_header"], "Performance-Eligible Articles", *categories.keys(), "Total Errors", "Errors per Article"]
+    headers = [cfg["trend_month_header"], "Verified Articles", *categories.keys(), "Total Errors", "Errors per Article"]
     _style_header(ws, headers)
     ws.column_dimensions["A"].width = 38
     ws.column_dimensions["B"].width = 27
 
-    eligible_ids = _performance_eligible_article_ids(projects, bundles, error_rows, team)
-    by_article = _article_error_map(error_rows, team, performance_only=True)
+    eligible_ids = _team_trend_eligible_article_ids(projects, bundles, error_rows)
+    by_article = _article_error_map(error_rows, team, performance_only=False)
     grouped: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"articles": set(), **{category: 0 for category in categories}}
     )
@@ -360,7 +390,7 @@ def _monthly_trend_sheet(wb, projects, bundles, error_rows, team):
         chart.add_data(data, titles_from_data=True)
         chart.set_categories(categories_ref)
         chart.legend = None
-        chart.y_axis.title = "Performance-Eligible Errors"
+        chart.y_axis.title = "AI-Classified Errors"
         chart.x_axis.title = cfg["trend_month_header"]
         ws.add_chart(chart, "I1")
 
@@ -554,11 +584,12 @@ def _analysis_sheet(wb, projects, bundles, error_rows, team):
         if row.get("team") == team:
             totals[str(row.get("ai_category"))] += int(row.get("ai_error_count") or 0)
 
-    eligible_ids = _performance_eligible_article_ids(projects, bundles, error_rows, team)
+    contributor_eligible_ids = _performance_eligible_article_ids(projects, bundles, error_rows, team)
+    team_eligible_ids = _team_trend_eligible_article_ids(projects, bundles, error_rows)
     classified_total = sum(totals.values())
     performance_total = sum(
         int(row.get("ai_error_count") or 0)
-        for row in _performance_errors(error_rows, team, eligible_ids)
+        for row in _performance_errors(error_rows, team, contributor_eligible_ids)
     )
     review_total = classified_total - performance_total
 
@@ -570,11 +601,12 @@ def _analysis_sheet(wb, projects, bundles, error_rows, team):
         [
             ("Performance-eligible error total", performance_total),
             ("Needs Review / excluded error total", review_total),
-            ("Performance-eligible articles", len(eligible_ids)),
-            ("Articles excluded from performance denominator", len(projects) - len(eligible_ids)),
+            ("Team-trend verified articles", len(team_eligible_ids)),
+            ("Contributor-performance eligible articles", len(contributor_eligible_ids)),
+            ("Articles excluded from contributor denominator", len(projects) - len(contributor_eligible_ids)),
             (
                 "Zero-error rule",
-                "An article counts as zero-error only when every eligible intermediate Frame.io version was successfully checked. No eligible intermediate version, any failed version check, unresolved attribution, or unresolved classification excludes the article from performance denominators until reviewed.",
+                "An article can count as zero-error only when every eligible intermediate Frame.io version was successfully checked. Team-level trend denominators use verified extraction coverage. Individual contributor summaries additionally require a clear contributor assignment; handovers, missing contributors, and unassigned team/category conflicts remain excluded until resolved.",
             ),
             (
                 "Trend scope",
@@ -722,6 +754,61 @@ def _needs_review_sheet(wb, bundles, error_rows, team):
             )
             _make_link(ws.cell(ws.max_row, 6), str(project.get("frameio_review_link") or ""))
 
+        if team == "scripting" and not str(project.get("scriptwriter") or "").strip():
+            ws.append(
+                [
+                    project.get("item_name") or project.get("article_id"),
+                    "Monday Attribution",
+                    "Scriptwriter is blank in Monday.com. The article is excluded from individual writer performance until the source assignment is corrected.",
+                    "",
+                    "",
+                    project.get("frameio_review_link") or "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "No",
+                ]
+            )
+            _make_link(ws.cell(ws.max_row, 6), str(project.get("frameio_review_link") or ""))
+
+        if team == "video_editing":
+            editors = _distinct_editors(project)
+            if not editors:
+                ws.append(
+                    [
+                        project.get("item_name") or project.get("article_id"),
+                        "Monday Attribution",
+                        "No video editor is assigned in Monday.com. The article is excluded from individual editor performance until the source assignment is corrected.",
+                        "",
+                        "",
+                        project.get("frameio_review_link") or "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "No",
+                    ]
+                )
+                _make_link(ws.cell(ws.max_row, 6), str(project.get("frameio_review_link") or ""))
+            elif len(editors) > 1:
+                ws.append(
+                    [
+                        project.get("item_name") or project.get("article_id"),
+                        "Editor Handover",
+                        "Multiple video editors are assigned in Monday.com: " + ", ".join(editors) + ". Individual error attribution requires review.",
+                        "",
+                        "",
+                        project.get("frameio_review_link") or "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "No",
+                    ]
+                )
+                _make_link(ws.cell(ws.max_row, 6), str(project.get("frameio_review_link") or ""))
+
     for row in error_rows:
         row_team = row.get("team")
         if row_team not in {team, "review"}:
@@ -730,7 +817,11 @@ def _needs_review_sheet(wb, bundles, error_rows, team):
             ws.append(
                 [
                     row.get("item_name") or row.get("article_id"),
-                    "Classification / Attribution",
+                    (
+                        "Classification Review"
+                        if row.get("needs_review") and row.get("performance_eligible", False)
+                        else "Classification / Attribution"
+                    ),
                     row.get("classification_reason") or "Needs manual verification",
                     row.get("version_number", ""),
                     row.get("timecode", ""),
@@ -813,6 +904,7 @@ def _review_overrides_sheet(wb, error_rows, team):
     ]
     rows.sort(
         key=lambda row: (
+            0 if row.get("needs_review") or not row.get("performance_eligible", True) else 1,
             str(row.get("article_id") or ""),
             int(row.get("version_number") or 0),
             str(row.get("comment_id") or ""),

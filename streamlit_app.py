@@ -313,9 +313,18 @@ if result:
     m1.metric("Monthly projects", metrics["monthly_projects"])
     m2.metric("Frame.io resolved", metrics["frameio_resolved"])
     m3.metric("Comments analyzed", metrics["comments_analyzed"])
-    m4.metric("Errors counted", metrics["total_error_count"])
-    m5.metric("Needs review", metrics["needs_review"])
+    m4.metric("Errors classified", metrics["total_error_count"])
+    m5.metric("Review items", metrics["needs_review"])
     m6.metric("Structural QA", f"{quality_score:.1%}")
+
+    st.caption(
+        f"Review queue: {metrics.get('needs_review', 0)} item(s) across "
+        f"{metrics.get('review_projects', 0)} project(s). Multiple review items can belong to the same project."
+    )
+    if metrics.get("unassigned_review_error_count", 0):
+        st.caption(
+            f"{metrics['unassigned_review_error_count']} potential error occurrence(s) are awaiting team/category assignment and are not included in either team report total."
+        )
 
     if qa.get("passed"):
         if metrics.get("needs_review", 0):
@@ -370,131 +379,139 @@ if result:
             use_container_width=True,
         )
 
-    st.subheader("Team review and finalization")
-    st.caption(
-        "Edit the blue input columns in each workbook's Review Overrides sheet. "
-        "Use Review Action = Approve, Change, or Remove, save the workbook, then upload it here. "
-        "The app regenerates static final reports so all summaries and denominators reflect the reviewed decisions."
-    )
-
-    review_col1, review_col2 = st.columns(2)
-    with review_col1:
-        reviewed_scripting = st.file_uploader(
-            "Reviewed Scripting QC workbook",
-            type=["xlsx"],
-            key=f"review_scripting_{st.session_state.get('qc_run_key', '')}",
-        )
-    with review_col2:
-        reviewed_video = st.file_uploader(
-            "Reviewed Video Editing QC workbook",
-            type=["xlsx"],
-            key=f"review_video_{st.session_state.get('qc_run_key', '')}",
-        )
-
-    if st.button(
-        "Apply Review Overrides & Regenerate Final Reports",
-        use_container_width=True,
-    ):
-        try:
-            override_maps = []
-            if reviewed_scripting is not None:
-                override_maps.append(parse_review_overrides(reviewed_scripting.getvalue()))
-            if reviewed_video is not None:
-                override_maps.append(parse_review_overrides(reviewed_video.getvalue()))
-
-            if not override_maps:
-                st.warning("Upload at least one reviewed QC workbook first.")
-            else:
-                overrides = merge_review_overrides(*override_maps)
-                if not overrides:
-                    st.warning(
-                        "No Review Action values were found. Enter Approve, Change, or Remove "
-                        "for the rows you reviewed, save the workbook, and upload it again."
-                    )
-                else:
-                    reviewed_rows, review_stats = apply_review_overrides(
-                        result["error_rows"],
-                        result["bundles"],
-                        overrides,
-                    )
-                    reviewed_scripting_report = build_report(
-                        team="scripting",
-                        year=result["year"],
-                        month=result["month"],
-                        projects=result["projects"],
-                        bundles=result["bundles"],
-                        error_rows=reviewed_rows,
-                        review_applied=True,
-                    )
-                    reviewed_video_report = build_report(
-                        team="video_editing",
-                        year=result["year"],
-                        month=result["month"],
-                        projects=result["projects"],
-                        bundles=result["bundles"],
-                        error_rows=reviewed_rows,
-                        review_applied=True,
-                    )
-                    reviewed_qa = audit_run(
-                        projects=result["projects"],
-                        bundles=result["bundles"],
-                        classifications=result.get("classifications") or [],
-                        error_rows=reviewed_rows,
-                        scripting_report=reviewed_scripting_report,
-                        video_report=reviewed_video_report,
-                    )
-                    st.session_state.qc_reviewed_result = {
-                        "scripting_report": reviewed_scripting_report,
-                        "video_report": reviewed_video_report,
-                        "review_stats": review_stats,
-                        "qa": reviewed_qa,
-                    }
-                    st.success(
-                        f"Applied {review_stats['applied']} reviewed decision(s) and regenerated both final reports."
-                    )
-        except Exception as exc:
-            st.error(f"Could not apply review overrides: {type(exc).__name__}: {exc}")
-
-    reviewed_result = st.session_state.get("qc_reviewed_result")
-    if reviewed_result:
-        review_stats = reviewed_result["review_stats"]
-        agreement = review_stats.get("reviewed_ai_agreement")
-        r1, r2, r3, r4 = st.columns(4)
-        r1.metric("Reviewed rows", review_stats["applied"])
-        r2.metric("AI approved", review_stats["approved"])
-        r3.metric("Changed/removed", review_stats["changed"] + review_stats["removed"])
-        r4.metric(
-            "Reviewed-row AI agreement",
-            f"{agreement:.1%}" if agreement is not None else "N/A",
-        )
+    with st.expander("After team review: apply corrections and create FINAL reports", expanded=False):
         st.caption(
-            "Reviewed-row AI agreement is measured only on rows the reviewer explicitly acted on. "
-            "It is not a claim about unreviewed comments."
+            "Edit the blue input columns in each workbook's Review Overrides sheet. "
+            "Use Review Action = Approve, Change, or Remove, save the workbook, then upload it here. "
+            "The app regenerates static final reports so all summaries and denominators reflect the reviewed decisions."
         )
 
-        fd1, fd2 = st.columns(2)
-        with fd1:
-            st.download_button(
-                "Download FINAL Scripting QC Report",
-                data=reviewed_result["scripting_report"],
-                file_name=f"{prefix}_Scripting_QC_FINAL.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+        review_col1, review_col2 = st.columns(2)
+        with review_col1:
+            reviewed_scripting = st.file_uploader(
+                "Reviewed Scripting QC workbook",
+                type=["xlsx"],
+                key=f"review_scripting_{st.session_state.get('qc_run_key', '')}",
             )
-        with fd2:
-            st.download_button(
-                "Download FINAL Video Editing QC Report",
-                data=reviewed_result["video_report"],
-                file_name=f"{prefix}_Video_Editing_QC_FINAL.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+        with review_col2:
+            reviewed_video = st.file_uploader(
+                "Reviewed Video Editing QC workbook",
+                type=["xlsx"],
+                key=f"review_video_{st.session_state.get('qc_run_key', '')}",
             )
+
+        if st.button(
+            "Apply Review Overrides & Regenerate Final Reports",
+            use_container_width=True,
+        ):
+            try:
+                override_maps = []
+                if reviewed_scripting is not None:
+                    override_maps.append(parse_review_overrides(reviewed_scripting.getvalue()))
+                if reviewed_video is not None:
+                    override_maps.append(parse_review_overrides(reviewed_video.getvalue()))
+
+                if not override_maps:
+                    st.warning("Upload at least one reviewed QC workbook first.")
+                else:
+                    overrides = merge_review_overrides(*override_maps)
+                    if not overrides:
+                        st.warning(
+                            "No Review Action values were found. Enter Approve, Change, or Remove "
+                            "for the rows you reviewed, save the workbook, and upload it again."
+                        )
+                    else:
+                        reviewed_rows, review_stats = apply_review_overrides(
+                            result["error_rows"],
+                            result["bundles"],
+                            overrides,
+                        )
+                        reviewed_scripting_report = build_report(
+                            team="scripting",
+                            year=result["year"],
+                            month=result["month"],
+                            projects=result["projects"],
+                            bundles=result["bundles"],
+                            error_rows=reviewed_rows,
+                            review_applied=True,
+                        )
+                        reviewed_video_report = build_report(
+                            team="video_editing",
+                            year=result["year"],
+                            month=result["month"],
+                            projects=result["projects"],
+                            bundles=result["bundles"],
+                            error_rows=reviewed_rows,
+                            review_applied=True,
+                        )
+                        reviewed_qa = audit_run(
+                            projects=result["projects"],
+                            bundles=result["bundles"],
+                            classifications=result.get("classifications") or [],
+                            error_rows=reviewed_rows,
+                            scripting_report=reviewed_scripting_report,
+                            video_report=reviewed_video_report,
+                        )
+                        st.session_state.qc_reviewed_result = {
+                            "scripting_report": reviewed_scripting_report,
+                            "video_report": reviewed_video_report,
+                            "review_stats": review_stats,
+                            "qa": reviewed_qa,
+                        }
+                        st.success(
+                            f"Applied {review_stats['applied']} reviewed decision(s) and regenerated both final reports."
+                        )
+            except Exception as exc:
+                st.error(f"Could not apply review overrides: {type(exc).__name__}: {exc}")
+
+        reviewed_result = st.session_state.get("qc_reviewed_result")
+        if reviewed_result:
+            review_stats = reviewed_result["review_stats"]
+            agreement = review_stats.get("reviewed_ai_agreement")
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("Reviewed rows", review_stats["applied"])
+            r2.metric("AI approved", review_stats["approved"])
+            r3.metric("Changed/removed", review_stats["changed"] + review_stats["removed"])
+            r4.metric(
+                "Reviewed-row AI agreement",
+                f"{agreement:.1%}" if agreement is not None else "N/A",
+            )
+            st.caption(
+                "Reviewed-row AI agreement is measured only on rows the reviewer explicitly acted on. "
+                "It is not a claim about unreviewed comments."
+            )
+
+            fd1, fd2 = st.columns(2)
+            with fd1:
+                st.download_button(
+                    "Download FINAL Scripting QC Report",
+                    data=reviewed_result["scripting_report"],
+                    file_name=f"{prefix}_Scripting_QC_FINAL.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+            with fd2:
+                st.download_button(
+                    "Download FINAL Video Editing QC Report",
+                    data=reviewed_result["video_report"],
+                    file_name=f"{prefix}_Video_Editing_QC_FINAL.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
 
     if result["unresolved"]:
-        st.warning(
-            f"{len(result['unresolved'])} project(s) require Frame.io/extraction verification. "
-            "They are listed in Needs Review and excluded from performance denominators until verified."
+        has_resolution_failure = any(
+            row.get("type") == "Frame.io Resolution"
+            for row in result["unresolved"]
         )
+        message = (
+            f"{len(result['unresolved'])} project(s) require Frame.io/extraction verification. "
+            "They are listed in Extraction Audit and excluded where required by the zero-error rule."
+        )
+        if has_resolution_failure:
+            st.warning(message)
+        else:
+            st.info(message)
         st.dataframe(result["unresolved"], use_container_width=True, hide_index=True)
     else:
         st.success("All monthly Monday projects have verified Frame.io extraction coverage.")
