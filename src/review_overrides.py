@@ -159,6 +159,7 @@ def apply_review_overrides(
         original_assignee = str(row.get("ai_assignee") or "")
         original_count = int(row.get("ai_error_count") or 0)
 
+        row["source_error_key"] = key
         row["original_team"] = original_team
         row["original_ai_category"] = original_category
         row["original_ai_assignee"] = original_assignee
