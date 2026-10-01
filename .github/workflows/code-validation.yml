@@ -51,6 +51,7 @@ jobs:
           from src.pipeline import _annotate_repeat_context
           from src.qa import audit_run
           from src.report_generator import build_report
+          from src.qc_classifier import attach_classifications
           from src.review_overrides import parse_review_overrides, apply_review_overrides
 
           projects = [
