@@ -280,6 +280,22 @@ def audit_run(
                     version_exclusion_ok = False
                     break
 
+    unverified_article_ids = {
+        str((bundle.get("project") or {}).get("article_id") or "")
+        for bundle in bundles
+        if (bundle.get("extraction_audit") or {}).get("status") != "verified"
+    }
+    scripting_eligible = _performance_eligible_article_ids(
+        projects, bundles, error_rows, "scripting"
+    )
+    video_eligible = _performance_eligible_article_ids(
+        projects, bundles, error_rows, "video_editing"
+    )
+    unverified_excluded = not (
+        unverified_article_ids & scripting_eligible
+        or unverified_article_ids & video_eligible
+    )
+
     data_checks = {
         "projects_present": bool(projects),
         "frameio_resolution_complete": len(resolved_projects) == len(projects),
@@ -288,6 +304,7 @@ def audit_run(
         "comment_ids_unique": len(comment_ids) == len(set(comment_ids)),
         "version_exclusion_policy": version_exclusion_ok,
         "zero_error_policy": zero_error_policy_ok,
+        "unverified_excluded_from_performance": unverified_excluded,
         "commenter_identity_coverage": (
             (commenter_count / len(comments)) if comments else 1.0
         ),
@@ -316,6 +333,7 @@ def audit_run(
         data_checks["comment_ids_unique"],
         data_checks["version_exclusion_policy"],
         data_checks["zero_error_policy"],
+        data_checks["unverified_excluded_from_performance"],
         *scripting["checks"].values(),
         *video["checks"].values(),
     ]
@@ -323,10 +341,10 @@ def audit_run(
 
     critical_pass = (
         data_checks["frameio_resolution_complete"]
-        and data_checks["extraction_verification_complete"]
         and data_checks["classification_coverage_complete"]
         and data_checks["version_exclusion_policy"]
         and data_checks["zero_error_policy"]
+        and data_checks["unverified_excluded_from_performance"]
     )
 
     notes = [*scripting["notes"], *video["notes"]]
