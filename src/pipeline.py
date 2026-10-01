@@ -419,9 +419,19 @@ def run_pipeline(
         # the evidence. Structural workbook failures are deterministic code bugs
         # and should surface immediately rather than waste API calls.
         data_checks = qa.get("data_checks") or {}
+        recoverable_extraction = any(
+            (
+                not bundle.get("resolution")
+                or bundle["resolution"].status != "resolved"
+                or int((bundle.get("extraction_audit") or {}).get("failed_versions") or 0) > 0
+            )
+            for bundle in latest.get("bundles") or []
+            if (bundle.get("extraction_audit") or {}).get("status") != "verified"
+        )
         recoverable = (
             not data_checks.get("frameio_resolution_complete", True)
             or not data_checks.get("classification_coverage_complete", True)
+            or recoverable_extraction
         )
         if not recoverable:
             return latest
