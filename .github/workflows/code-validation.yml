@@ -35,58 +35,133 @@ jobs:
           from src.pipeline import run_pipeline
           from src.qc_classifier import classify_comments
           from src.report_generator import build_report
+          from src.review_overrides import parse_review_overrides, apply_review_overrides
+          from src.qa import audit_run
           print("Production modules imported successfully.")
           PY
 
-      - name: Smoke-test Excel generation
+      - name: Smoke-test QC controls and Excel generation
         run: |
           python - <<'PY'
-          from openpyxl import load_workbook
           from io import BytesIO
-          from src.frameio_client import Resolution
-          from src.report_generator import build_report
+          from openpyxl import load_workbook
 
-          projects = [{
-              "article_id": "71224",
-              "item_name": "71224_Ronceret",
-              "draft_script_sent": "2026-04-30",
-              "date_video_released": "2026-08-16",
-              "frameio_review_link": "https://f.io/example",
-              "scriptwriter": "Writer A",
-              "science_video_editor": "Editor A",
-              "finishing_editor": "",
-              "rough_editor": "",
-          }]
-          bundles = [{
-              "project": projects[0],
-              "resolution": Resolution(
-                  status="resolved",
-                  account_id="a",
-                  project_id="p",
-                  version_stack_id="v",
-                  asset_name="71224_Ronceret_Preview",
-                  method="smoke_test",
-              ),
-              "versions": [],
-              "comments": [{
+          from src.frameio_client import Resolution
+          from src.pipeline import _annotate_repeat_context
+          from src.qa import audit_run
+          from src.report_generator import build_report
+          from src.review_overrides import parse_review_overrides, apply_review_overrides
+
+          projects = [
+              {
                   "article_id": "71224",
-                  "version_number": 2,
-                  "version_name": "71224_Ronceret_Preview_V2.mp4",
-                  "comment_id": "c1",
-                  "parent_comment_id": "",
-                  "is_reply": False,
-                  "commenter": "Reviewer",
-                  "created_at": "2026-08-01T00:00:00Z",
-                  "timestamp": "00:00:10:00",
-                  "text": "Scientific name should be italicized.",
-              }],
-          }]
+                  "item_name": "71224_Ronceret",
+                  "draft_script_sent": "2026-04-30",
+                  "date_video_released": "2026-08-16",
+                  "frameio_review_link": "https://f.io/example-a",
+                  "scriptwriter": "Writer A",
+                  "science_video_editor": "Editor A",
+                  "finishing_editor": "Editor A",
+                  "rough_editor": "Editor A",
+              },
+              {
+                  "article_id": "70000",
+                  "item_name": "70000_Example",
+                  "draft_script_sent": "2026-03-01",
+                  "date_video_released": "2026-08-15",
+                  "frameio_review_link": "https://f.io/example-b",
+                  "scriptwriter": "Writer B",
+                  "science_video_editor": "Editor B",
+                  "finishing_editor": "Editor B",
+                  "rough_editor": "Editor B",
+              },
+          ]
+
+          bundles = [
+              {
+                  "project": projects[0],
+                  "resolution": Resolution(
+                      status="resolved",
+                      account_id="a",
+                      project_id="p",
+                      version_stack_id="v1",
+                      asset_name="71224_Ronceret_Preview",
+                      method="smoke_test",
+                  ),
+                  "versions": [
+                      {"version_number": 1, "included_for_qc": False, "name": "V1"},
+                      {"version_number": 2, "included_for_qc": True, "name": "V2", "qc_check_status": "checked"},
+                      {"version_number": 3, "included_for_qc": False, "name": "V3"},
+                  ],
+                  "comments": [{
+                      "article_id": "71224",
+                      "version_number": 2,
+                      "version_name": "71224_Ronceret_Preview_V2.mp4",
+                      "comment_id": "c1",
+                      "parent_comment_id": "",
+                      "is_reply": False,
+                      "commenter": "Reviewer",
+                      "created_at": "2026-08-01T00:00:00Z",
+                      "timestamp": "00:00:10:00",
+                      "text": "Scientific name should be italicized.",
+                      "repeated_from_prior_version": False,
+                      "prior_match_version": 0,
+                      "prior_match_score": 0,
+                      "prior_match_text": "",
+                  }],
+                  "extraction_audit": {
+                      "status": "verified",
+                      "total_versions": 3,
+                      "eligible_versions": 1,
+                      "checked_versions": 1,
+                      "failed_versions": 0,
+                      "first_version": "V1",
+                      "final_version": "V3",
+                      "checked_version_names": ["V2"],
+                      "failed_version_names": [],
+                      "comment_count": 1,
+                      "zero_error_verified": False,
+                      "note": "All 1 eligible intermediate version(s) were checked successfully.",
+                  },
+              },
+              {
+                  "project": projects[1],
+                  "resolution": Resolution(
+                      status="resolved",
+                      account_id="a",
+                      project_id="p",
+                      version_stack_id="v2",
+                      asset_name="70000_Example_Preview",
+                      method="smoke_test",
+                  ),
+                  "versions": [
+                      {"version_number": 1, "included_for_qc": False, "name": "V1"},
+                      {"version_number": 2, "included_for_qc": False, "name": "V2"},
+                  ],
+                  "comments": [],
+                  "extraction_audit": {
+                      "status": "needs_review",
+                      "total_versions": 2,
+                      "eligible_versions": 0,
+                      "checked_versions": 0,
+                      "failed_versions": 0,
+                      "first_version": "V1",
+                      "final_version": "V2",
+                      "checked_version_names": [],
+                      "failed_version_names": [],
+                      "comment_count": 0,
+                      "zero_error_verified": False,
+                      "note": "No eligible intermediate Frame.io versions exist.",
+                  },
+              },
+          ]
+
           errors = [{
               "article_id": "71224",
               "item_name": "71224_Ronceret",
               "date_video_released": "2026-08-16",
               "draft_script_sent": "2026-04-30",
-              "frameio_review_link": "https://f.io/example",
+              "frameio_review_link": "https://f.io/example-a",
               "resolution_method": "smoke_test",
               "asset_name": "71224_Ronceret_Preview",
               "version_number": 2,
@@ -105,14 +180,17 @@ jobs:
               "ai_error_count": 1,
               "confidence": 0.99,
               "needs_review": False,
+              "performance_eligible": True,
               "classification_reason": "Scientific nomenclature formatting.",
+              "pattern_label": "Scientific formatting",
               "ai_assignee": "Writer A",
               "scriptwriter": "Writer A",
               "science_video_editor": "Editor A",
-              "finishing_editor": "",
-              "rough_editor": "",
+              "finishing_editor": "Editor A",
+              "rough_editor": "Editor A",
           }]
 
+          reports = {}
           for team in ("scripting", "video_editing"):
               payload = build_report(
                   team=team,
@@ -122,11 +200,26 @@ jobs:
                   bundles=bundles,
                   error_rows=errors,
               )
+              reports[team] = payload
               wb = load_workbook(BytesIO(payload), data_only=False)
-              assert "Error Detail" in wb.sheetnames
-              assert "Needs Review" in wb.sheetnames
-              assert "Raw Frame.io Comments" in wb.sheetnames
+
+              for sheet in (
+                  "Extraction Audit",
+                  "Needs Review",
+                  "Review Overrides",
+                  "Error Detail",
+                  "Raw Frame.io Comments",
+                  "_Build Info",
+                  "_Validation Lists",
+              ):
+                  assert sheet in wb.sheetnames
+
               assert wb["Raw Frame.io Comments"].sheet_state == "hidden"
+              assert wb["_Validation Lists"].sheet_state == "hidden"
+              assert wb["Extraction Audit"].max_row == 3
+              assert wb["Extraction Audit"]["O3"].value == "No"
+              assert wb["Extraction Audit"]["P3"].value == "needs_review"
+              assert wb["Needs Review"].max_row >= 2
 
               if team == "scripting":
                   main = wb["QC by Draft Date"]
@@ -137,15 +230,76 @@ jobs:
                       "Scientific Accuracy & Completeness", "QC Comment",
                       "Scientific Formatting", "QC Comment", "Total Errors",
                   ]
-                  assert main["A2"].value == "71224_Ronceret"
-                  assert main["J2"].value == 1
-                  assert main["K2"].value == "Italicize scientific name"
+                  # Draft-date sort: March project before April project.
+                  assert main["A2"].value == "70000_Example"
+                  assert main["A3"].value == "71224_Ronceret"
+                  assert main["J3"].value == 1
+                  assert wb["Monthly Trend"]["A1"].value == "Draft Month (selected release cohort)"
                   assert wb["Monthly Trend"]["A2"].value == "2026-04"
-                  assert len(wb["Monthly Trend"]._charts) == 1
+                  assert wb["Writer Summary"]["B2"].value == 1
                   assert "Writer Monthly Trend" in wb.sheetnames
               else:
+                  assert wb["Monthly Trend"]["A1"].value == "Release Month (selected cohort)"
+                  assert wb["Editor Summary"]["B2"].value == 1
                   desc = wb["Description"]
                   assert desc["A2"].value == "Audio/Visual"
                   assert desc["B2"].value == "Sound glitch, video glitch, blurry footage, footage pacing"
-          print("Excel smoke test passed.")
+
+          # Deterministic Previous Comments Unaddressed evidence.
+          repeat_bundle = [{
+              "comments": [
+                  {"version_number": 2, "created_at": "1", "text": "Please italicize the scientific name."},
+                  {"version_number": 3, "created_at": "2", "text": "Same issue: please italicize the scientific name."},
+                  {"version_number": 3, "created_at": "3", "text": "This was in the previous version but add a new label here."},
+              ]
+          }]
+          _annotate_repeat_context(repeat_bundle)
+          assert repeat_bundle[0]["comments"][1]["repeated_from_prior_version"] is True
+          assert repeat_bundle[0]["comments"][2]["repeated_from_prior_version"] is False
+          assert repeat_bundle[0]["comments"][2]["repeat_language_without_match"] is True
+
+          # Reviewer override round trip.
+          reviewed_wb = load_workbook(BytesIO(reports["scripting"]))
+          review_ws = reviewed_wb["Review Overrides"]
+          review_ws["M2"] = "Change"
+          review_ws["N2"] = "video_editing"
+          review_ws["O2"] = "On-Screen Text"
+          review_ws["P2"] = "Editor A"
+          review_ws["Q2"] = 1
+          review_ws["R2"] = "Reviewer reassigned to video."
+          reviewed_bytes = BytesIO()
+          reviewed_wb.save(reviewed_bytes)
+
+          overrides = parse_review_overrides(reviewed_bytes.getvalue())
+          reviewed_rows, stats = apply_review_overrides(errors, bundles, overrides)
+          assert stats["changed"] == 1
+          assert reviewed_rows[0]["team"] == "video_editing"
+          assert reviewed_rows[0]["performance_eligible"] is True
+
+          final_video = build_report(
+              team="video_editing",
+              year=2026,
+              month=8,
+              projects=projects,
+              bundles=bundles,
+              error_rows=reviewed_rows,
+              review_applied=True,
+          )
+          final_wb = load_workbook(BytesIO(final_video), data_only=False)
+          assert final_wb["_Build Info"]["B5"].value == "Yes"
+          assert final_wb["Video QC by Release Date"]["L3"].value == 1
+
+          qa = audit_run(
+              projects=projects,
+              bundles=bundles,
+              classifications=[{"comment_id": "c1", "issues": []}],
+              error_rows=errors,
+              scripting_report=reports["scripting"],
+              video_report=reports["video_editing"],
+          )
+          assert qa["data_checks"]["zero_error_policy"] is True
+          assert qa["data_checks"]["unverified_excluded_from_performance"] is True
+          assert qa["data_checks"]["extraction_verification_complete"] is False
+          assert qa["passed"] is True
+          print("QC smoke tests passed.")
           PY
