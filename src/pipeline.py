@@ -85,9 +85,9 @@ def _repeat_similarity(current: str, prior: str) -> float:
 
 def _annotate_repeat_context(bundles: list[dict[str, Any]]) -> None:
     explicit_repeat = re.compile(
-        r"\b(previous comment|previous comments|as mentioned before|mentioned earlier|"
-        r"still not|still needs|still need|not addressed|unaddressed|same issue|"
-        r"requested earlier|commented earlier)\b",
+        r"\b(previous comment|previous comments|previous version|earlier version|last version|"
+        r"as mentioned before|mentioned earlier|still not|still needs|still need|"
+        r"not addressed|unaddressed|same issue|requested earlier|commented earlier)\b",
         re.I,
     )
 
