@@ -812,12 +812,12 @@ def _review_overrides_sheet(wb, error_rows, team):
                 row.get("ai_error_count", 0),
                 "Yes" if row.get("needs_review") else "No",
                 "Yes" if row.get("performance_eligible", False) else "No",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
+                row.get("review_action", ""),
+                row.get("manual_team", ""),
+                row.get("manual_category", ""),
+                row.get("manual_assignee", ""),
+                row.get("manual_count", "") if row.get("manual_count") is not None else "",
+                row.get("reviewer_notes", ""),
             ]
         )
         row_number = ws.max_row
