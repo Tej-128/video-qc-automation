@@ -237,6 +237,8 @@ jobs:
                   assert main["A2"].value == "70000_Example"
                   assert main["A3"].value == "71224_Ronceret"
                   assert main["J3"].value == 1
+                  assert main["K3"].value == "Scientific name should be italicized."
+                  assert wb["Error Detail"]["F2"].value == "Scientific name should be italicized."
                   assert wb["Monthly Trend"]["A1"].value == "Draft Month (selected release cohort)"
                   assert wb["Monthly Trend"]["A2"].value == "2026-04"
                   assert wb["Writer Summary"]["B2"].value == 1

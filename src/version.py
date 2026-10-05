@@ -1,2 +1,2 @@
-BUILD_VERSION = "QC-V2.6-2026-10-01"
-BUILD_LABEL = "share-ready audited reporting candidate"
+BUILD_VERSION = "QC-V2.7-2026-10-05"
+BUILD_LABEL = "verbatim-source-comment reporting candidate"

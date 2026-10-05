@@ -87,7 +87,7 @@ Rules:
 7. If there is no genuine QC error, return an empty issues array.
 8. If the team or category is ambiguous, choose the most plausible one but set needs_review=true and lower confidence.
 9. Never invent facts outside the comment text and supplied metadata.
-10. Keep error_summary short and concrete.
+10. Never paraphrase, summarize, rewrite, clean up, shorten, expand, correct, or otherwise alter the reviewer comment. Set error_summary to the exact supplied comment text, character-for-character. The application also enforces this deterministically downstream.
 11. pattern_label must be a short normalized recurring-pattern phrase, reusing the same wording for similar errors across different comments (for example: "Footage pacing", "Audio-video mismatch", "Incorrect highlighting", "On-screen text formatting").
 12. Return exactly one classification object for every supplied record_key, even when its issues array is empty.
 """
@@ -341,7 +341,7 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     "issue_index": 0,
                     "team": "review",
                     "ai_category": "None",
-                    "error_summary": "OpenAI classification failed for this comment",
+                    "error_summary": comment.get("text", ""),
                     "ai_error_count": 0,
                     "confidence": 0.0,
                     "needs_review": True,
@@ -390,7 +390,7 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                         "issue_index": issue_index,
                         "team": "review",
                         "ai_category": category,
-                        "error_summary": issue.get("error_summary", ""),
+                        "error_summary": comment.get("text", ""),
                         "ai_error_count": error_count,
                         "confidence": float(issue.get("confidence") or 0),
                         "needs_review": True,
@@ -464,7 +464,7 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     "issue_index": issue_index,
                     "team": team,
                     "ai_category": category,
-                    "error_summary": issue.get("error_summary", ""),
+                    "error_summary": comment.get("text", ""),
                     "ai_error_count": int(issue.get("error_count") or 1),
                     "confidence": confidence,
                     "needs_review": needs_review,
