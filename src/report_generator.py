@@ -1183,6 +1183,60 @@ def _pattern_sheet(wb, error_rows):
     return ws
 
 
+def _scope_reconciliation_sheet(wb, projects, bundles, error_rows):
+    ws = wb.create_sheet("Scope Reconciliation")
+    _style_header(ws, ["Metric", "Count", "Interpretation"])
+
+    verified_articles = {
+        str((bundle.get("project") or {}).get("article_id") or "")
+        for bundle in bundles
+        if _extraction_verified(bundle)
+    }
+    contributor_eligible = _performance_eligible_article_ids(
+        projects, bundles, error_rows, "video_editing"
+    )
+    editor_errors = sum(
+        int(row.get("ai_error_count") or 0)
+        for row in error_rows
+        if row.get("team") == "video_editing"
+    )
+    vo_redos = sum(
+        int(row.get("ai_error_count") or 0)
+        for row in error_rows
+        if row.get("team") == "operational" and row.get("ai_category") == "VO Redos"
+    )
+    pattern_total = sum(
+        int(row.get("ai_error_count") or 0)
+        for row in error_rows
+        if row.get("team") == "video_editing"
+    )
+    review_items = sum(
+        1 for row in error_rows
+        if row.get("needs_review") or row.get("team") == "review"
+    )
+
+    rows = [
+        ("Monthly Monday projects", len(projects), "Complete selected release-month population."),
+        ("Verified QC-stage articles", len(verified_articles), "Articles whose recognized proof stages were checked without unresolved stage/extraction gaps."),
+        ("Individual-editor eligible articles", len(contributor_eligible), "Verified articles with an unambiguous video editor and no blocking attribution issue."),
+        ("Video-editor errors", editor_errors, "Errors attributed to video editing; this is the total used by editor performance summaries."),
+        ("VO Redos (non-editor)", vo_redos, "Operational VO redo requests shown separately and excluded from editor performance."),
+        ("Total QC items", editor_errors + vo_redos, "Video-editor errors plus operational VO Redos."),
+        ("Common Error Patterns total", pattern_total, "All video-editor error patterns are listed, including one-off patterns, so this reconciles to Video-editor errors."),
+        ("Review items", review_items, "Rows requiring semantic or attribution review; not every review item excludes its article from performance."),
+    ]
+    for row in rows:
+        ws.append(row)
+
+    ws.column_dimensions["A"].width = 34
+    ws.column_dimensions["B"].width = 14
+    ws.column_dimensions["C"].width = 100
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    return ws
+
+
 def _stage_breakdown_sheet(wb, error_rows):
     ws = wb.create_sheet("Review Stage Breakdown")
     categories = {**VIDEO_CATEGORIES, "VO Redos": OPERATIONAL_CATEGORIES["VO Redos"]}
@@ -1295,6 +1349,7 @@ def build_report(
     if team == "video_editing":
         _pattern_sheet(wb, error_rows)
         _stage_breakdown_sheet(wb, error_rows)
+        _scope_reconciliation_sheet(wb, projects, bundles, error_rows)
 
     _comment_coverage_sheet(wb, bundles, classifications or [])
     _excluded_source_sheet(wb, bundles)
