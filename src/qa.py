@@ -97,6 +97,7 @@ def audit_workbook(
         "Needs Review",
         "Review Overrides",
         "Comment Coverage",
+        "Non-Performance Items",
         "Excluded Source Comments",
         "Error Detail",
         "Raw Frame.io Comments",
