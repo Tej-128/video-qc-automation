@@ -2,7 +2,7 @@ name: Code Validation
 
 on:
   push:
-    branches: [main, qc-feedback-hardening-v28]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -33,9 +33,8 @@ jobs:
           python - <<'PY'
           from src.frameio_client import FrameIOClient
           from src.pipeline import run_pipeline
-          from src.qc_classifier import attach_classifications, classify_comments
+          from src.qc_classifier import _normalize_model_issues, attach_classifications, classify_comments
           from src.report_generator import build_report
-          from src.qc_classifier import _normalize_model_issues, attach_classifications
           from src.review_overrides import parse_review_overrides, apply_review_overrides
           from src.qa import audit_run
           print("Production modules imported successfully.")
