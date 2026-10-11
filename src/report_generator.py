@@ -84,8 +84,8 @@ def _unique_texts(rows: list[dict[str, Any]]) -> list[str]:
     for row in rows:
         # QC Comment must always be the exact Frame.io source comment.
         # Never use AI-generated/paraphrased wording in a user-facing comment field.
-        text = str(row.get("comment_text") or "").strip()
-        if text and text not in result:
+        text = str(row.get("comment_text") or "")
+        if text.strip() and text not in result:
             result.append(text)
     return result
 
