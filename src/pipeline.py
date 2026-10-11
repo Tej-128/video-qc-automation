@@ -143,6 +143,31 @@ def _annotate_repeat_context(bundles: list[dict[str, Any]]) -> None:
             prior_by_version.setdefault(version, []).append(comment)
 
 
+
+def _annotate_neighbor_context(bundles: list[dict[str, Any]]) -> None:
+    title_signal = re.compile(r"\b(title|section title|title card|chapter title)\b", re.I)
+    for bundle in bundles:
+        by_version: dict[int, list[dict[str, Any]]] = {}
+        for comment in bundle.get("comments") or []:
+            by_version.setdefault(int(comment.get("version_number") or 0), []).append(comment)
+
+        for rows in by_version.values():
+            rows.sort(key=lambda row: str(row.get("created_at") or ""))
+            for index, comment in enumerate(rows):
+                previous_text = str(rows[index - 1].get("text") or "") if index > 0 else ""
+                next_text = str(rows[index + 1].get("text") or "") if index + 1 < len(rows) else ""
+                text = str(comment.get("text") or "").strip()
+                comment["previous_same_version_text"] = previous_text
+                comment["next_same_version_text"] = next_text
+                comment["standalone_title_context"] = bool(
+                    text
+                    and len(text) <= 180
+                    and not re.search(r"\b(edit|change|replace|add|insert|remove|delete|fix|correct)\b", text, re.I)
+                    and (title_signal.search(previous_text) or title_signal.search(next_text))
+                )
+
+
+
 def _unverified_extraction_audit(note: str) -> dict[str, Any]:
     return {
         "status": "needs_review",
@@ -237,6 +262,7 @@ def _run_pipeline_once(
         bundles.append(bundle)
 
     _annotate_repeat_context(bundles)
+    _annotate_neighbor_context(bundles)
 
     all_comments: list[dict[str, Any]] = []
     for bundle in bundles:
