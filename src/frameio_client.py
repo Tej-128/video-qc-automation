@@ -371,11 +371,19 @@ class FrameIOClient:
 
         legacy = re.search(r"(?:^|[_\-\s])V(\d+)(?=[_.\-\s]|$)", upper)
         if legacy:
+            legacy_number = int(legacy.group(1))
+            if legacy_number <= 1:
+                return {
+                    "review_stage": "Legacy V1 / pre-QC",
+                    "stage_kind": "pre_qc",
+                    "proof_number": 0,
+                    "stage_verified": True,
+                }
             return {
-                "review_stage": f"Legacy V{legacy.group(1)} (stage unverified)",
-                "stage_kind": "unknown",
-                "proof_number": None,
-                "stage_verified": False,
+                "review_stage": f"Legacy V{legacy_number} / QC Proof",
+                "stage_kind": "qc_proof",
+                "proof_number": legacy_number - 1,
+                "stage_verified": True,
             }
 
         return {
