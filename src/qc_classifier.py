@@ -122,6 +122,29 @@ def _operational_vo_redo_hint(text: str) -> bool:
     return low.startswith("use vo redo") or low.startswith("use the vo redo") or low.startswith("insert new vo")
 
 
+def _editorial_scope_adjustment_hint(source: dict[str, Any]) -> bool:
+    text = str(source.get("text") or "")
+    low = text.casefold()
+    if "#scripting" in low:
+        return False
+
+    if "not shown" in low and "title" in low:
+        return True
+    if "see text protocol" in low and ("add on-screen text" in low or "add onscreen text" in low):
+        return True
+
+    stage = str(source.get("review_stage") or "")
+    later_proof = bool(re.match(r"^[2-9]\d*(?:nd|rd|th) Proof$", stage))
+    late_title_change = bool(
+        re.search(r"\b(edit title|insert section title card|add on-screen text|add onscreen text)\b", low)
+    )
+    return bool(
+        later_proof
+        and late_title_change
+        and not source.get("repeated_from_prior_version")
+    )
+
+
 def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     text = str(source.get("text") or "")
     normalized: list[dict[str, Any]] = []
@@ -151,6 +174,23 @@ def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]
             "reason": "Deterministic VO redo operational rule.",
             "pattern_label": "VO Redo",
         })
+
+    if _editorial_scope_adjustment_hint(source):
+        retained = [
+            row for row in normalized
+            if row.get("team") == "video_editing"
+        ]
+        retained.append({
+            "team": "operational",
+            "category": "Editorial / Scope Adjustment",
+            "error_summary": text,
+            "error_count": 1,
+            "confidence": 0.95,
+            "needs_review": False,
+            "reason": "Late editorial/scope change rule; not charged to scripting performance.",
+            "pattern_label": "Editorial scope adjustment",
+        })
+        normalized = retained
 
     if bool(source.get("standalone_title_context")) and not normalized:
         normalized.append({
