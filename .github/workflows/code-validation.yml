@@ -430,6 +430,11 @@ jobs:
           )
           assert zero_bundle["extraction_audit"]["zero_error_verified"] is True
 
+          # Legacy V2+ naming is still QC per the meeting rule; V1 remains pre-QC.
+          assert FrameIOClient.infer_review_stage("70442_Cheng_080726_V5.mp4", 1)["stage_kind"] == "qc_proof"
+          assert FrameIOClient.infer_review_stage("70442_Cheng_091726_V6_Web.mp4", 2)["stage_kind"] == "qc_proof"
+          assert FrameIOClient.infer_review_stage("Example_V1.mp4", 1)["stage_kind"] == "pre_qc"
+
           # Feedback regressions: VO redo, late scope adjustment, and standalone title.
           vo_source = {"text": "Use VO redo for 3.8:\n\n3.8. Prepare serial dilutions.", "review_stage": "1st Proof"}
           vo_rows = _normalize_model_issues(
