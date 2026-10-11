@@ -237,6 +237,7 @@ def _run_pipeline_once(
                     "resolution": resolution,
                     "versions": [],
                     "comments": [],
+                    "excluded_comments": [],
                     "extraction_audit": _unverified_extraction_audit(resolution.note),
                 }
             )
@@ -298,6 +299,7 @@ def _run_pipeline_once(
         projects=projects,
         bundles=bundles,
         error_rows=error_rows,
+        classifications=classifications,
     )
 
     _notify(progress_callback, "Generating Video Editing QC workbook...", 0.91)
@@ -308,6 +310,7 @@ def _run_pipeline_once(
         projects=projects,
         bundles=bundles,
         error_rows=error_rows,
+        classifications=classifications,
     )
 
     _notify(progress_callback, "Auditing generated reports against live run data...", 0.96)
@@ -339,7 +342,8 @@ def _run_pipeline_once(
     classification_failures = [
         row for row in error_rows
         if row.get("team") == "review"
-        and row.get("error_summary") == "OpenAI classification failed for this comment"
+        and int(row.get("issue_index") or 0) == 0
+        and "classification could not be recovered" in str(row.get("classification_reason") or "").casefold()
     ]
     review_project_ids = {
         str(row.get("article_id") or "")
@@ -368,6 +372,14 @@ def _run_pipeline_once(
             "frameio_resolved": len(resolved),
             "frameio_unresolved": len(unresolved),
             "comments_analyzed": len(all_comments),
+            "source_comments_seen": sum(
+                int((bundle.get("extraction_audit") or {}).get("source_comment_count") or 0)
+                for bundle in bundles
+            ),
+            "excluded_source_comments": sum(
+                len(bundle.get("excluded_comments") or [])
+                for bundle in bundles
+            ),
             "classified_error_rows": len(error_rows),
             "total_error_count": sum(
                 int(row.get("ai_error_count") or 0)
@@ -378,6 +390,11 @@ def _run_pipeline_once(
                 int(row.get("ai_error_count") or 0)
                 for row in error_rows
                 if row.get("team") == "review"
+            ),
+            "vo_redo_count": sum(
+                int(row.get("ai_error_count") or 0)
+                for row in error_rows
+                if row.get("team") == "operational" and row.get("ai_category") == "VO Redos"
             ),
             "needs_review": len(needs_review_errors) + len(extraction_needs_review),
             "review_projects": len(review_project_ids),
