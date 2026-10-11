@@ -611,41 +611,51 @@ def _analysis_sheet(wb, projects, bundles, error_rows, team):
     categories = _category_config(team)
     ws = wb.create_sheet("Analysis Guide")
     _style_header(ws, ["Analysis Item", "Result / Interpretation"])
-    ws.column_dimensions["A"].width = 38
-    ws.column_dimensions["B"].width = 105
+    ws.column_dimensions["A"].width = 42
+    ws.column_dimensions["B"].width = 110
 
     totals = Counter()
     for row in error_rows:
-        if row.get("team") == team:
+        if _row_in_report(row, team):
             totals[str(row.get("ai_category"))] += int(row.get("ai_error_count") or 0)
 
     contributor_eligible_ids = _performance_eligible_article_ids(projects, bundles, error_rows, team)
     team_eligible_ids = _team_trend_eligible_article_ids(projects, bundles, error_rows)
-    classified_total = sum(totals.values())
-    performance_total = sum(
-        int(row.get("ai_error_count") or 0)
-        for row in _performance_errors(error_rows, team, contributor_eligible_ids)
+    editor_or_writer_total = sum(
+        totals[category]
+        for category in _performance_category_config(team)
     )
-    review_total = classified_total - performance_total
+    vo_redos = totals["VO Redos"] if team == "video_editing" else 0
 
-    rows = [("AI-classified grand total", classified_total)]
+    rows = [("AI-classified performance-error total", editor_or_writer_total)]
     for category in categories:
         rows.append((category, totals[category]))
 
     rows.extend(
         [
-            ("Performance-eligible error total", performance_total),
-            ("Needs Review / excluded error total", review_total),
+            ("Operational VO Redos excluded from editor performance", vo_redos),
             ("Team-trend verified articles", len(team_eligible_ids)),
             ("Contributor-performance eligible articles", len(contributor_eligible_ids)),
             ("Articles excluded from contributor denominator", len(projects) - len(contributor_eligible_ids)),
             (
-                "Zero-error rule",
-                "An article can count as zero-error only when every eligible intermediate Frame.io version was successfully checked. Team-level trend denominators use verified extraction coverage. Individual contributor summaries additionally require a clear contributor assignment; handovers, missing contributors, and unassigned team/category conflicts remain excluded until resolved.",
+                "Performance eligibility",
+                "Team-level trends require verified QC-stage extraction. Individual contributor performance additionally requires an unambiguous contributor. Semantic review items with a known team/contributor can remain provisionally counted; unresolved team attribution, handovers, missing contributors, or unverified extraction remain excluded.",
             ),
             (
-                "Trend scope",
-                "Trend tabs use only projects in the selected release-month cohort. Scripting is grouped by Draft Script Sent month within that cohort; Video Editing is grouped by release month within that cohort. These are cohort views, not complete historical-month populations.",
+                "Version / stage scope",
+                "Rough/pre-QC source stages are excluded. P/P2/P3... files are treated as QC proof stages. The latest proof is not automatically excluded: if it contains QC comments it is included; a latest no-comment proof can be identified as the final published version. Comments authored by the Monday.com Science Interpreter or Post Shoot Notes Integrator are excluded from performance QC and remain auditable in Excluded Source Comments.",
+            ),
+            (
+                "VO Redos",
+                "VO Redos are tracked visibly as operational QC items and are not assigned to or counted against a video editor unless the same comment contains a separate, explicit video-editing execution error.",
+            ),
+            (
+                "Count reconciliation",
+                "Video QC by Release Date and Monthly Trend show VO Redos separately. Total Editor Errors excludes VO Redos. Common Error Patterns now lists every editor-error pattern and marks recurring patterns instead of dropping one-off patterns, so its Total Count reconciles to editor-error totals.",
+            ),
+            (
+                "Comment preservation",
+                "Every displayed source comment is copied verbatim from Frame.io. Comment Coverage shows every included QC comment, including comments classified as no error, so comments cannot disappear silently.",
             ),
             (
                 "Manual review workflow",
@@ -653,11 +663,11 @@ def _analysis_sheet(wb, projects, bundles, error_rows, team):
             ),
             (
                 "QA interpretation",
-                "The app QA score measures source coverage, extraction verification, workbook integrity, and deterministic consistency. It is not a claim of semantic classification accuracy; reviewed overrides provide the ground truth for semantic agreement.",
+                "The app QA score measures source coverage, stage filtering, extraction verification, workbook integrity, and deterministic consistency. It is not a claim of semantic classification accuracy; reviewed overrides provide the ground truth for semantic agreement.",
             ),
             (
                 "Small samples",
-                "Contributor summary cells are flagged when fewer than 5 performance-eligible articles are available. Interpret rates cautiously for small samples.",
+                "Contributor summary cells are flagged when fewer than 5 performance-eligible articles are available. Interpret Errors per Article cautiously for small samples.",
             ),
         ]
     )
@@ -672,7 +682,6 @@ def _analysis_sheet(wb, projects, bundles, error_rows, team):
 
     return ws
 
-
 def _extraction_audit_sheet(wb, bundles):
     ws = wb.create_sheet("Extraction Audit")
     headers = [
@@ -682,14 +691,16 @@ def _extraction_audit_sheet(wb, bundles):
         "Resolution Method",
         "Asset Name",
         "Total Versions",
-        "First Version (Excluded)",
-        "Eligible Intermediate Versions",
-        "Checked Intermediate Versions",
-        "Failed Intermediate Versions",
-        "Checked Version Names",
-        "Failed Version Names",
-        "Final Version (Excluded)",
-        "Extracted Comments/Replies",
+        "QC Proof Versions Found",
+        "QC Proof Versions Checked",
+        "Failed QC Proof Versions",
+        "Checked QC Proof Names",
+        "Failed QC Proof Names",
+        "Final Published / No-Comment Version",
+        "Unknown Stage Versions",
+        "Source Comments Seen",
+        "Excluded Rough/SI/Post-Shoot Comments",
+        "Included QC Comments/Replies",
         "Zero-Error Verified?",
         "Extraction Status",
         "Audit Note",
@@ -713,13 +724,15 @@ def _extraction_audit_sheet(wb, bundles):
                 getattr(resolution, "method", "") if resolution else "",
                 getattr(resolution, "asset_name", "") if resolution else "",
                 audit.get("total_versions", 0),
-                audit.get("first_version", ""),
                 audit.get("eligible_versions", 0),
                 audit.get("checked_versions", 0),
                 audit.get("failed_versions", 0),
                 "; ".join(audit.get("checked_version_names") or []),
                 "; ".join(audit.get("failed_version_names") or []),
                 audit.get("final_version", ""),
+                "; ".join(audit.get("unknown_stage_version_names") or []),
+                audit.get("source_comment_count", 0),
+                audit.get("excluded_source_comment_count", 0),
                 audit.get("comment_count", 0),
                 "Yes" if audit.get("zero_error_verified") else "No",
                 audit.get("status", "needs_review"),
@@ -733,9 +746,9 @@ def _extraction_audit_sheet(wb, bundles):
                 ws.cell(row_number, column).fill = CAUTION_FILL
 
     widths = {
-        "A": 24, "B": 30, "C": 18, "D": 24, "E": 35, "F": 14, "G": 35,
-        "H": 20, "I": 20, "J": 20, "K": 55, "L": 55, "M": 35, "N": 20,
-        "O": 18, "P": 18, "Q": 80,
+        "A": 24, "B": 30, "C": 18, "D": 24, "E": 35, "F": 14, "G": 20,
+        "H": 20, "I": 20, "J": 55, "K": 55, "L": 42, "M": 55, "N": 18,
+        "O": 28, "P": 22, "Q": 18, "R": 18, "S": 85,
     }
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
@@ -744,13 +757,13 @@ def _extraction_audit_sheet(wb, bundles):
             cell.alignment = Alignment(wrap_text=True, vertical="top")
     return ws
 
-
 def _needs_review_sheet(wb, bundles, error_rows, team):
     ws = wb.create_sheet("Needs Review")
     headers = [
         "Article Number",
         "Type",
         "Reason",
+        "Review Stage",
         "Version",
         "Timecode",
         "Frame.io Review Link",
@@ -775,10 +788,11 @@ def _needs_review_sheet(wb, bundles, error_rows, team):
             ws.append(
                 [
                     project.get("item_name") or project.get("article_id"),
-                    "Extraction Verification",
+                    "Extraction / Stage Verification",
                     reason,
                     "",
                     "",
+                    "",
                     project.get("frameio_review_link") or "",
                     "",
                     "",
@@ -787,62 +801,35 @@ def _needs_review_sheet(wb, bundles, error_rows, team):
                     "No",
                 ]
             )
-            _make_link(ws.cell(ws.max_row, 6), str(project.get("frameio_review_link") or ""))
+            _make_link(ws.cell(ws.max_row, 7), str(project.get("frameio_review_link") or ""))
 
         if team == "scripting" and not str(project.get("scriptwriter") or "").strip():
-            ws.append(
-                [
-                    project.get("item_name") or project.get("article_id"),
-                    "Monday Attribution",
-                    "Scriptwriter is blank in Monday.com. The article is excluded from individual writer performance until the source assignment is corrected.",
-                    "",
-                    "",
-                    project.get("frameio_review_link") or "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "No",
-                ]
-            )
-            _make_link(ws.cell(ws.max_row, 6), str(project.get("frameio_review_link") or ""))
+            ws.append([
+                project.get("item_name") or project.get("article_id"),
+                "Monday Attribution",
+                "Scriptwriter is blank in Monday.com. Excluded from individual writer performance until corrected.",
+                "", "", "", project.get("frameio_review_link") or "", "", "", "", "", "No",
+            ])
+            _make_link(ws.cell(ws.max_row, 7), str(project.get("frameio_review_link") or ""))
 
         if team == "video_editing":
             editors = _distinct_editors(project)
             if not editors:
-                ws.append(
-                    [
-                        project.get("item_name") or project.get("article_id"),
-                        "Monday Attribution",
-                        "No video editor is assigned in Monday.com. The article is excluded from individual editor performance until the source assignment is corrected.",
-                        "",
-                        "",
-                        project.get("frameio_review_link") or "",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "No",
-                    ]
-                )
-                _make_link(ws.cell(ws.max_row, 6), str(project.get("frameio_review_link") or ""))
+                ws.append([
+                    project.get("item_name") or project.get("article_id"),
+                    "Monday Attribution",
+                    "No video editor is assigned in Monday.com. Excluded from individual editor performance until corrected.",
+                    "", "", "", project.get("frameio_review_link") or "", "", "", "", "", "No",
+                ])
+                _make_link(ws.cell(ws.max_row, 7), str(project.get("frameio_review_link") or ""))
             elif len(editors) > 1:
-                ws.append(
-                    [
-                        project.get("item_name") or project.get("article_id"),
-                        "Editor Handover",
-                        "Multiple video editors are assigned in Monday.com: " + ", ".join(editors) + ". Individual error attribution requires review.",
-                        "",
-                        "",
-                        project.get("frameio_review_link") or "",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "No",
-                    ]
-                )
-                _make_link(ws.cell(ws.max_row, 6), str(project.get("frameio_review_link") or ""))
+                ws.append([
+                    project.get("item_name") or project.get("article_id"),
+                    "Editor Handover",
+                    "Multiple video editors are assigned in Monday.com: " + ", ".join(editors) + ". Individual error attribution requires review.",
+                    "", "", "", project.get("frameio_review_link") or "", "", "", "", "", "No",
+                ])
+                _make_link(ws.cell(ws.max_row, 7), str(project.get("frameio_review_link") or ""))
 
     for row in error_rows:
         row_team = row.get("team")
@@ -858,6 +845,7 @@ def _needs_review_sheet(wb, bundles, error_rows, team):
                         else "Classification / Attribution"
                     ),
                     row.get("classification_reason") or "Needs manual verification",
+                    row.get("review_stage", ""),
                     row.get("version_number", ""),
                     row.get("timecode", ""),
                     row.get("frameio_review_link", ""),
@@ -868,18 +856,17 @@ def _needs_review_sheet(wb, bundles, error_rows, team):
                     "Yes" if row.get("performance_eligible", False) else "No",
                 ]
             )
-            _make_link(ws.cell(ws.max_row, 6), str(row.get("frameio_review_link") or ""))
+            _make_link(ws.cell(ws.max_row, 7), str(row.get("frameio_review_link") or ""))
 
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(wrap_text=True, vertical="top")
         row[1].fill = CAUTION_FILL
 
-    widths = {"A": 24, "B": 28, "C": 70, "D": 10, "E": 16, "F": 30, "G": 80, "H": 30, "I": 25, "J": 12, "K": 20}
+    widths = {"A": 24, "B": 30, "C": 70, "D": 22, "E": 10, "F": 16, "G": 30, "H": 80, "I": 30, "J": 25, "K": 12, "L": 20}
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
     return ws
-
 
 def _error_key(row: dict[str, Any]) -> str:
     if row.get("source_error_key"):
@@ -1023,17 +1010,18 @@ def _error_detail_sheet(wb, error_rows, team):
         "Performance Eligible",
         "Needs Review",
         "Confidence",
+        "Review Stage",
         "Version",
+        "Version File",
         "Timecode",
         "Frame.io Review Link",
-        "Comment",
         "Comment ID",
         "Pattern Label",
     ]
     _style_header(ws, headers)
 
     for row in error_rows:
-        if row.get("team") not in {team, "review"}:
+        if not (_row_in_report(row, team) or row.get("team") == "review"):
             continue
         ws.append(
             [
@@ -1047,15 +1035,16 @@ def _error_detail_sheet(wb, error_rows, team):
                 "Yes" if row.get("performance_eligible", False) else "No",
                 "Yes" if row.get("needs_review") else "No",
                 row.get("confidence", ""),
+                row.get("review_stage", ""),
                 row.get("version_number", ""),
+                row.get("version_name", ""),
                 row.get("timecode", ""),
                 row.get("frameio_review_link", ""),
-                row.get("comment_text", ""),
                 row.get("comment_id", ""),
                 row.get("pattern_label", ""),
             ]
         )
-        _make_link(ws.cell(ws.max_row, 13), str(row.get("frameio_review_link") or ""))
+        _make_link(ws.cell(ws.max_row, 15), str(row.get("frameio_review_link") or ""))
 
     for row in ws.iter_rows(min_row=2):
         for cell in row:
@@ -1064,17 +1053,21 @@ def _error_detail_sheet(wb, error_rows, team):
     ws.sheet_state = "hidden"
     return ws
 
-
 def _raw_comments_sheet(wb, bundles):
     ws = wb.create_sheet("Raw Frame.io Comments")
     headers = [
         "Article Number",
+        "Review Stage",
+        "Stage Verified?",
         "Version",
         "Version File",
         "Comment ID",
         "Parent Comment ID",
         "Reply?",
         "Commenter",
+        "Source Role",
+        "Included for QC?",
+        "Exclusion Reason",
         "Created At",
         "Timecode",
         "Comment",
@@ -1087,16 +1080,23 @@ def _raw_comments_sheet(wb, bundles):
 
     for bundle in bundles:
         project = bundle.get("project") or {}
-        for row in bundle.get("comments") or []:
+        rows = list(bundle.get("comments") or []) + list(bundle.get("excluded_comments") or [])
+        rows.sort(key=lambda row: (int(row.get("version_number") or 0), str(row.get("created_at") or ""), str(row.get("comment_id") or "")))
+        for row in rows:
             ws.append(
                 [
                     project.get("item_name") or row.get("article_id"),
+                    row.get("review_stage", ""),
+                    "Yes" if row.get("stage_verified") else "No",
                     row.get("version_number"),
                     row.get("version_name"),
                     row.get("comment_id"),
                     row.get("parent_comment_id"),
                     "Yes" if row.get("is_reply") else "No",
                     row.get("commenter"),
+                    row.get("source_role", ""),
+                    "Yes" if row.get("included_for_qc", True) else "No",
+                    row.get("exclusion_reason", ""),
                     row.get("created_at"),
                     row.get("timestamp"),
                     row.get("text"),
@@ -1109,7 +1109,6 @@ def _raw_comments_sheet(wb, bundles):
 
     ws.sheet_state = "hidden"
     return ws
-
 
 def _canonical_pattern(category: str, pattern: str) -> str:
     label = (pattern or category or "").strip()
