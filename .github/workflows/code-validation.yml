@@ -463,5 +463,51 @@ jobs:
           assert standalone[0]["team"] == "scripting"
           assert standalone[0]["category"] == "Titles & On-screen Text"
 
+          # Swati comparison regressions: equation/content completeness and final concentration.
+          equation = _normalize_model_issues(
+              {
+                  "text": 'Instead of this onscreen text, we could modify the VO to say "Calculate the colony-forming units per milliliter using the Equation shown" and show the equation on a plain background',
+                  "review_stage": "1st Proof",
+              },
+              [
+                  {"team": "scripting", "category": "Language & Narration", "error_summary": "x", "error_count": 1, "confidence": 0.91, "needs_review": False, "reason": "x", "pattern_label": "x"},
+                  {"team": "video_editing", "category": "On-Screen Text", "error_summary": "x", "error_count": 1, "confidence": 0.85, "needs_review": False, "reason": "x", "pattern_label": "x"},
+              ],
+          )
+          assert len(equation) == 1
+          assert equation[0]["team"] == "scripting"
+          assert equation[0]["category"] == "Scientific Accuracy & Completeness"
+          assert equation[0]["error_count"] == 1
+
+          concentration = _normalize_model_issues(
+              {
+                  "text": "Add onscreen text:\n\nFinal concentration:\nLPS: 1 µg/mL\nBAI: 100 µM",
+                  "review_stage": "1st Proof",
+              },
+              [{"team": "video_editing", "category": "On-Screen Text", "error_summary": "x", "error_count": 1, "confidence": 0.88, "needs_review": False, "reason": "x", "pattern_label": "x"}],
+          )
+          assert len(concentration) == 1
+          assert concentration[0]["team"] == "scripting"
+          assert concentration[0]["category"] == "Scientific Accuracy & Completeness"
+
+          specify = _normalize_model_issues(
+              {
+                  "text": "VO should specify what is being labeled.\n\nUse VO redo for 4.8.\n\n#scripting",
+                  "review_stage": "1st Proof",
+              },
+              [{"team": "scripting", "category": "Language & Narration", "error_summary": "x", "error_count": 1, "confidence": 0.9, "needs_review": False, "reason": "x", "pattern_label": "x"}],
+          )
+          assert specify[0]["team"] == "scripting"
+          assert specify[0]["category"] == "Scientific Accuracy & Completeness"
+
+          # A pure VO redo must not become an editor penalty merely because the model guessed video editing.
+          vo_video_guess = _normalize_model_issues(
+              {"text": "Use the VO redo for step 2.7 for revised narration.", "review_stage": "2nd Proof"},
+              [{"team": "video_editing", "category": "Audio/Visual", "error_summary": "x", "error_count": 1, "confidence": 0.8, "needs_review": False, "reason": "x", "pattern_label": "x"}],
+          )
+          assert len(vo_video_guess) == 1
+          assert vo_video_guess[0]["team"] == "operational"
+          assert vo_video_guess[0]["category"] == "VO Redos"
+
           print("QC smoke tests passed.")
           PY
