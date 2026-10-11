@@ -415,8 +415,8 @@ class FrameIOClient:
             return str(comment.get("owner_name") or comment.get("owner_id") or "")
 
         def add(comment: dict[str, Any], is_reply: bool, parent_id: str = "") -> None:
-            text = str(comment.get("text") or "").strip()
-            if not text:
+            text = str(comment.get("text") or "")
+            if not text.strip():
                 return
             commenter = owner_name(comment)
             source_role = cls._source_role(project, commenter)
