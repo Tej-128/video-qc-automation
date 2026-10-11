@@ -325,7 +325,87 @@ class FrameIOClient:
         return merged
 
     @staticmethod
-    def flatten_comments(comments: list[dict[str, Any]], *, article_id: str, version_number: int, version_name: str, file_id: str) -> list[dict[str, Any]]:
+    def _normalized_person(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+    @classmethod
+    def _person_matches(cls, commenter: str, monday_people: str) -> bool:
+        target = cls._normalized_person(commenter)
+        if not target:
+            return False
+        candidates = [
+            cls._normalized_person(part)
+            for part in re.split(r"[;,|]", str(monday_people or ""))
+            if str(part).strip()
+        ]
+        return target in candidates
+
+    @staticmethod
+    def infer_review_stage(version_name: str, version_number: int) -> dict[str, Any]:
+        name = str(version_name or "")
+        upper = name.upper()
+
+        proof = re.search(r"(?:^|[_\-\s])P(\d*)(?=[_.\-\s]|$)", upper)
+        if proof:
+            proof_number = int(proof.group(1) or "1")
+            suffix = (
+                "st" if proof_number % 10 == 1 and proof_number % 100 != 11
+                else "nd" if proof_number % 10 == 2 and proof_number % 100 != 12
+                else "rd" if proof_number % 10 == 3 and proof_number % 100 != 13
+                else "th"
+            )
+            return {
+                "review_stage": f"{proof_number}{suffix} Proof",
+                "stage_kind": "qc_proof",
+                "proof_number": proof_number,
+                "stage_verified": True,
+            }
+
+        if re.search(r"(?:^|[_\-\s])R(?=[_.\-\s]|$)", upper) or "ROUGH" in upper:
+            return {
+                "review_stage": "Rough / pre-QC",
+                "stage_kind": "pre_qc",
+                "proof_number": 0,
+                "stage_verified": True,
+            }
+
+        legacy = re.search(r"(?:^|[_\-\s])V(\d+)(?=[_.\-\s]|$)", upper)
+        if legacy:
+            return {
+                "review_stage": f"Legacy V{legacy.group(1)} (stage unverified)",
+                "stage_kind": "unknown",
+                "proof_number": None,
+                "stage_verified": False,
+            }
+
+        return {
+            "review_stage": f"Version {version_number} (stage unverified)",
+            "stage_kind": "unknown",
+            "proof_number": None,
+            "stage_verified": False,
+        }
+
+    @classmethod
+    def _source_role(cls, project: dict[str, str], commenter: str) -> str:
+        if cls._person_matches(commenter, project.get("science_interpreter", "")):
+            return "Science Interpreter"
+        if cls._person_matches(commenter, project.get("post_shoot_notes_integrator", "")):
+            return "Post Shoot Notes Integrator"
+        return "QC / Other"
+
+    @classmethod
+    def flatten_comments(
+        cls,
+        comments: list[dict[str, Any]],
+        *,
+        project: dict[str, str],
+        version_number: int,
+        version_name: str,
+        file_id: str,
+        review_stage: str,
+        stage_kind: str,
+        stage_verified: bool,
+    ) -> list[dict[str, Any]]:
         flattened: list[dict[str, Any]] = []
 
         def owner_name(comment: dict[str, Any]) -> str:
@@ -336,20 +416,27 @@ class FrameIOClient:
 
         def add(comment: dict[str, Any], is_reply: bool, parent_id: str = "") -> None:
             text = str(comment.get("text") or "").strip()
-            if text:
-                flattened.append({
-                    "article_id": article_id,
-                    "version_number": version_number,
-                    "version_name": version_name,
-                    "file_id": file_id,
-                    "comment_id": str(comment.get("id") or ""),
-                    "parent_comment_id": parent_id,
-                    "is_reply": is_reply,
-                    "commenter": owner_name(comment),
-                    "created_at": str(comment.get("created_at") or ""),
-                    "timestamp": str(comment.get("timestamp") or ""),
-                    "text": text,
-                })
+            if not text:
+                return
+            commenter = owner_name(comment)
+            source_role = cls._source_role(project, commenter)
+            flattened.append({
+                "article_id": project.get("article_id", ""),
+                "version_number": version_number,
+                "version_name": version_name,
+                "review_stage": review_stage,
+                "stage_kind": stage_kind,
+                "stage_verified": bool(stage_verified),
+                "file_id": file_id,
+                "comment_id": str(comment.get("id") or ""),
+                "parent_comment_id": parent_id,
+                "is_reply": is_reply,
+                "commenter": commenter,
+                "source_role": source_role,
+                "created_at": str(comment.get("created_at") or ""),
+                "timestamp": str(comment.get("timestamp") or ""),
+                "text": text,
+            })
 
         for comment in comments:
             parent_id = str(comment.get("id") or "")
@@ -368,6 +455,7 @@ class FrameIOClient:
                 "resolution": resolution,
                 "versions": [],
                 "comments": [],
+                "excluded_comments": [],
                 "extraction_audit": {
                     "status": "needs_review",
                     "total_versions": 0,
@@ -378,6 +466,9 @@ class FrameIOClient:
                     "final_version": "",
                     "checked_version_names": [],
                     "failed_version_names": [],
+                    "unknown_stage_version_names": [],
+                    "excluded_source_comment_count": 0,
+                    "source_comment_count": 0,
                     "comment_count": 0,
                     "zero_error_verified": False,
                     "note": resolution.note or "Frame.io project was not resolved.",
@@ -386,32 +477,38 @@ class FrameIOClient:
 
         versions = self.version_children(resolution.account_id, resolution.version_stack_id)
         annotated_versions: list[dict[str, Any]] = []
-        all_comments: list[dict[str, Any]] = []
-        checked_version_names: list[str] = []
-        failed_version_names: list[str] = []
+        included_comments: list[dict[str, Any]] = []
+        excluded_comments: list[dict[str, Any]] = []
+        checked_qc_version_names: list[str] = []
+        failed_qc_version_names: list[str] = []
+        unknown_stage_version_names: list[str] = []
+        unknown_stage_comments = 0
+        source_comment_count = 0
+        final_published_version = ""
 
         total_versions = len(versions)
-        first_version = self._name(versions[0]) if versions else ""
-        final_version = self._name(versions[-1]) if versions else ""
-        eligible_versions = max(total_versions - 2, 0)
 
         for index, version in enumerate(versions, start=1):
+            version_name = str(version.get("name") or self._name(version) or f"Version {index}")
+            stage = self.infer_review_stage(version_name, index)
             row = dict(version)
             row["version_number"] = index
-            row["included_for_qc"] = 1 < index < total_versions
+            row.update(stage)
+            row["included_for_qc"] = False
             row["qc_check_status"] = "excluded"
+            row["qc_comment_count"] = 0
+            row["excluded_comment_count"] = 0
+            row["is_final_published"] = False
             annotated_versions.append(row)
 
-            if not row["included_for_qc"]:
-                continue
-
             file_id = str(version.get("id") or "")
-            version_name = str(version.get("name") or self._name(version) or f"Version {index}")
-
             if not file_id:
                 row["qc_check_status"] = "failed"
-                row["qc_check_note"] = "Eligible intermediate version had no file id."
-                failed_version_names.append(version_name)
+                row["qc_check_note"] = "Version had no file id."
+                if stage["stage_kind"] == "qc_proof":
+                    failed_qc_version_names.append(version_name)
+                elif stage["stage_kind"] == "unknown":
+                    unknown_stage_version_names.append(version_name)
                 continue
 
             try:
@@ -419,52 +516,103 @@ class FrameIOClient:
             except Exception as exc:
                 row["qc_check_status"] = "failed"
                 row["qc_check_note"] = f"{type(exc).__name__}: {exc}"
-                failed_version_names.append(version_name)
+                if stage["stage_kind"] == "qc_proof":
+                    failed_qc_version_names.append(version_name)
+                elif stage["stage_kind"] == "unknown":
+                    unknown_stage_version_names.append(version_name)
                 continue
 
-            row["qc_check_status"] = "checked"
-            row["qc_comment_count"] = len(comments)
-            checked_version_names.append(version_name)
-            all_comments.extend(
-                self.flatten_comments(
-                    comments,
-                    article_id=project.get("article_id", ""),
-                    version_number=index,
-                    version_name=version_name,
-                    file_id=file_id,
-                )
+            flattened = self.flatten_comments(
+                comments,
+                project=project,
+                version_number=index,
+                version_name=version_name,
+                file_id=file_id,
+                review_stage=stage["review_stage"],
+                stage_kind=stage["stage_kind"],
+                stage_verified=bool(stage["stage_verified"]),
             )
+            source_comment_count += len(flattened)
+            row["qc_check_status"] = "checked"
+            row["qc_comment_count"] = len(flattened)
 
-        checked_versions = len(checked_version_names)
-        failed_versions = len(failed_version_names)
+            is_latest = index == total_versions
+            if stage["stage_kind"] == "qc_proof":
+                checked_qc_version_names.append(version_name)
+                if is_latest and not flattened:
+                    row["is_final_published"] = True
+                    row["review_stage"] = "Final Published / no QC comments"
+                    final_published_version = version_name
 
-        if eligible_versions == 0:
+            if stage["stage_kind"] == "pre_qc":
+                for comment in flattened:
+                    comment["included_for_qc"] = False
+                    comment["exclusion_reason"] = "Rough/pre-QC source stage."
+                    excluded_comments.append(comment)
+                row["excluded_comment_count"] = len(flattened)
+                continue
+
+            version_included = False
+            for comment in flattened:
+                source_role = str(comment.get("source_role") or "")
+                if source_role in {"Science Interpreter", "Post Shoot Notes Integrator"}:
+                    comment["included_for_qc"] = False
+                    comment["exclusion_reason"] = (
+                        f"Commenter matches Monday.com {source_role}; excluded from performance QC."
+                    )
+                    excluded_comments.append(comment)
+                    row["excluded_comment_count"] += 1
+                    continue
+
+                comment["included_for_qc"] = True
+                comment["exclusion_reason"] = ""
+                included_comments.append(comment)
+                version_included = True
+                if stage["stage_kind"] == "unknown":
+                    unknown_stage_comments += 1
+
+            row["included_for_qc"] = version_included
+            if stage["stage_kind"] == "unknown" and flattened:
+                unknown_stage_version_names.append(version_name)
+
+        eligible_versions = len(checked_qc_version_names) + len(failed_qc_version_names)
+        checked_versions = len(checked_qc_version_names)
+        failed_versions = len(failed_qc_version_names)
+        first_version = self._name(versions[0]) if versions else ""
+
+        if not versions:
+            audit_status = "needs_review"
+            audit_note = "No Frame.io versions were returned for the resolved stack."
+        elif eligible_versions == 0:
             audit_status = "needs_review"
             audit_note = (
-                "No eligible intermediate Frame.io versions exist between the first and final versions; "
-                "the article cannot be treated as a verified zero-error project."
+                "No filename-verified QC proof stage (P/P2/P3...) was found. "
+                "Any unrecognized-stage comments remain visible but are excluded from performance until reviewed."
             )
         elif failed_versions:
             audit_status = "needs_review"
             audit_note = (
-                f"{failed_versions} of {eligible_versions} eligible intermediate version(s) could not be checked."
+                f"{failed_versions} of {eligible_versions} QC proof version(s) could not be checked."
             )
-        elif checked_versions != eligible_versions:
+        elif unknown_stage_comments:
             audit_status = "needs_review"
             audit_note = (
-                f"Only {checked_versions} of {eligible_versions} eligible intermediate version(s) were verified."
+                f"{unknown_stage_comments} comment(s) came from unrecognized version stages. "
+                "They remain visible for review but are excluded from performance."
             )
         else:
             audit_status = "verified"
             audit_note = (
-                f"All {eligible_versions} eligible intermediate version(s) were checked successfully."
+                f"All {checked_versions} filename-verified QC proof version(s) were checked. "
+                f"{len(excluded_comments)} pre-QC/SI source comment(s) were intentionally excluded."
             )
 
         return {
             "project": project,
             "resolution": resolution,
             "versions": annotated_versions,
-            "comments": all_comments,
+            "comments": included_comments,
+            "excluded_comments": excluded_comments,
             "extraction_audit": {
                 "status": audit_status,
                 "total_versions": total_versions,
@@ -472,12 +620,18 @@ class FrameIOClient:
                 "checked_versions": checked_versions,
                 "failed_versions": failed_versions,
                 "first_version": first_version,
-                "final_version": final_version,
-                "checked_version_names": checked_version_names,
-                "failed_version_names": failed_version_names,
-                "comment_count": len(all_comments),
-                "zero_error_verified": audit_status == "verified" and len(all_comments) == 0,
+                "final_version": final_published_version,
+                "checked_version_names": checked_qc_version_names,
+                "failed_version_names": failed_qc_version_names,
+                "unknown_stage_version_names": sorted(set(unknown_stage_version_names)),
+                "excluded_source_comment_count": len(excluded_comments),
+                "source_comment_count": source_comment_count,
+                "comment_count": len(included_comments),
+                "zero_error_verified": (
+                    audit_status == "verified"
+                    and checked_versions > 0
+                    and len(included_comments) == 0
+                ),
                 "note": audit_note,
             },
         }
-
