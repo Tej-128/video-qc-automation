@@ -160,18 +160,8 @@ def audit_workbook(
             notes.append(f"{team} main-sheet totals do not reconcile to classified rows.")
 
         by_article = {
-            str(project.get("item_name") or project.get("article_id") or ""): index
-            for index, project in enumerate(
-                sorted(
-                    projects,
-                    key=lambda project: (
-                        project.get("draft_script_sent" if team == "scripting" else "date_video_released") or "",
-                        str(project.get("article_id") or ""),
-                        str(project.get("item_name") or ""),
-                    ),
-                ),
-                start=2,
-            )
+            str(ws.cell(row_number, 1).value or ""): row_number
+            for row_number in range(2, ws.max_row + 1)
         }
         verbatim_ok = True
         category_order = list(categories)
