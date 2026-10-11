@@ -2,7 +2,7 @@ name: Code Validation
 
 on:
   push:
-    branches: [main]
+    branches: [main, qc-feedback-hardening-v28]
   workflow_dispatch:
 
 permissions:
@@ -35,7 +35,7 @@ jobs:
           from src.pipeline import run_pipeline
           from src.qc_classifier import attach_classifications, classify_comments
           from src.report_generator import build_report
-          from src.qc_classifier import attach_classifications
+          from src.qc_classifier import _normalize_model_issues, attach_classifications
           from src.review_overrides import parse_review_overrides, apply_review_overrides
           from src.qa import audit_run
           print("Production modules imported successfully.")
@@ -47,8 +47,8 @@ jobs:
           from io import BytesIO
           from openpyxl import load_workbook
 
-          from src.frameio_client import Resolution
-          from src.pipeline import _annotate_repeat_context
+          from src.frameio_client import FrameIOClient, Resolution
+          from src.pipeline import _annotate_neighbor_context, _annotate_repeat_context
           from src.qa import audit_run
           from src.report_generator import build_report
           from src.qc_classifier import attach_classifications
@@ -220,8 +220,8 @@ jobs:
               assert wb["_Validation Lists"].sheet_state == "hidden"
               assert wb["Extraction Audit"].max_row == 3
               assert wb["Extraction Audit"]["A2"].value == "70000_Example"
-              assert wb["Extraction Audit"]["O2"].value == "No"
-              assert wb["Extraction Audit"]["P2"].value == "needs_review"
+              assert wb["Extraction Audit"]["Q2"].value == "No"
+              assert wb["Extraction Audit"]["R2"].value == "needs_review"
               assert wb["Needs Review"].max_row >= 2
 
               if team == "scripting":
@@ -292,7 +292,8 @@ jobs:
           )
           final_wb = load_workbook(BytesIO(final_video), data_only=False)
           assert final_wb["_Build Info"]["B5"].value == "Yes"
-          assert final_wb["Video QC by Release Date"]["L3"].value == 1
+          assert final_wb["Video QC by Release Date"]["N3"].value == 1
+          assert final_wb["Video QC by Release Date"]["O3"].value == 1
 
           qa = audit_run(
               projects=projects,
@@ -350,6 +351,117 @@ jobs:
           )
           assert reviewable_rows[0]["needs_review"] is True
           assert reviewable_rows[0]["performance_eligible"] is True
+
+          # Stage-aware extraction: do not blindly drop first/last stack children.
+          class FakeFrameIO(FrameIOClient):
+              def __init__(self, versions, comments_by_id):
+                  self._versions = versions
+                  self._comments_by_id = comments_by_id
+
+              def version_children(self, account_id, version_stack_id):
+                  return self._versions
+
+              def comments_for_file(self, account_id, file_id):
+                  return self._comments_by_id.get(file_id, [])
+
+          stage_project = {
+              "article_id": "69447",
+              "item_name": "69447_Osei",
+              "science_interpreter": "Balamurugan P",
+              "post_shoot_notes_integrator": "",
+          }
+          stage_resolution = Resolution(
+              status="resolved",
+              account_id="a",
+              project_id="p",
+              version_stack_id="stack",
+              asset_name="69447_Osei_082726_P_Web.mp4",
+              method="smoke_test",
+          )
+          fake = FakeFrameIO(
+              [
+                  {"id": "r", "name": "69447_Osei_050626_R_Web.mp4", "created_at": "1"},
+                  {"id": "p", "name": "69447_Osei_082726_P_Web.mp4", "created_at": "2"},
+              ],
+              {
+                  "r": [{"id": "r1", "text": "Author/SI rough comment", "owner": {"name": "Balamurugan P"}}],
+                  "p": [
+                      {"id": "p1", "text": "Use lowercase 'a'", "owner": {"name": "Shehnaz Lokhandwala"}},
+                      {"id": "p2", "text": "SI follow-up on proof", "owner": {"name": "Balamurugan P"}},
+                  ],
+              },
+          )
+          stage_bundle = fake.extract_intermediate_comments(stage_project, stage_resolution)
+          assert [row["comment_id"] for row in stage_bundle["comments"]] == ["p1"]
+          assert {row["comment_id"] for row in stage_bundle["excluded_comments"]} == {"r1", "p2"}
+          assert stage_bundle["comments"][0]["review_stage"] == "1st Proof"
+          assert stage_bundle["extraction_audit"]["status"] == "verified"
+
+          # A stack that begins at P2 must not have its first child thrown away.
+          fake_late = FakeFrameIO(
+              [
+                  {"id": "p2", "name": "67081_Ebong_062025_P2_Web.mp4", "created_at": "1"},
+                  {"id": "p3", "name": "67081_Ebong_092926_P3_Web.mp4", "created_at": "2"},
+              ],
+              {
+                  "p2": [{"id": "late1", "text": "QC correction on P2", "owner": {"name": "Shehnaz Lokhandwala"}}],
+                  "p3": [],
+              },
+          )
+          late_bundle = fake_late.extract_intermediate_comments(
+              {"article_id": "67081", "item_name": "67081_Ebong", "science_interpreter": "", "post_shoot_notes_integrator": ""},
+              stage_resolution,
+          )
+          assert [row["comment_id"] for row in late_bundle["comments"]] == ["late1"]
+          assert late_bundle["extraction_audit"]["final_version"].endswith("_P3_Web.mp4")
+          assert late_bundle["extraction_audit"]["status"] == "verified"
+
+          # Two-version R/P with a checked no-comment proof is a verified zero-error case.
+          fake_zero = FakeFrameIO(
+              [
+                  {"id": "zr", "name": "70001_Test_R_Web.mp4", "created_at": "1"},
+                  {"id": "zp", "name": "70001_Test_P_Web.mp4", "created_at": "2"},
+              ],
+              {"zr": [], "zp": []},
+          )
+          zero_bundle = fake_zero.extract_intermediate_comments(
+              {"article_id": "70001", "item_name": "70001_Test", "science_interpreter": "", "post_shoot_notes_integrator": ""},
+              stage_resolution,
+          )
+          assert zero_bundle["extraction_audit"]["zero_error_verified"] is True
+
+          # Feedback regressions: VO redo, late scope adjustment, and standalone title.
+          vo_source = {"text": "Use VO redo for 3.8:\n\n3.8. Prepare serial dilutions.", "review_stage": "1st Proof"}
+          vo_rows = _normalize_model_issues(
+              vo_source,
+              [{"team": "scripting", "category": "Language & Narration", "error_summary": "x", "error_count": 1, "confidence": 0.9, "needs_review": False, "reason": "x", "pattern_label": "x"}],
+          )
+          assert any(row["team"] == "operational" and row["category"] == "VO Redos" for row in vo_rows)
+          assert not any(row["team"] == "scripting" for row in vo_rows)
+
+          scripted_vo = _normalize_model_issues(
+              {"text": "VO should specify what is being labeled. Use VO redo for 4.8. #scripting", "review_stage": "1st Proof"},
+              [{"team": "scripting", "category": "Scientific Accuracy & Completeness", "error_summary": "x", "error_count": 1, "confidence": 0.95, "needs_review": False, "reason": "x", "pattern_label": "x"}],
+          )
+          assert scripted_vo[0]["team"] == "scripting"
+
+          editorial = _normalize_model_issues(
+              {"text": "Since flow cytometry analysis is not shown, edit the title to:\n\nElectroporation", "review_stage": "1st Proof"},
+              [{"team": "scripting", "category": "Titles & On-screen Text", "error_summary": "x", "error_count": 1, "confidence": 0.95, "needs_review": False, "reason": "x", "pattern_label": "x"}],
+          )
+          assert editorial[0]["team"] == "operational"
+          assert editorial[0]["category"] == "Editorial / Scope Adjustment"
+
+          standalone = _normalize_model_issues(
+              {
+                  "text": "Characterization of BMECs Using Immunofluorescence",
+                  "review_stage": "1st Proof",
+                  "standalone_title_context": True,
+              },
+              [],
+          )
+          assert standalone[0]["team"] == "scripting"
+          assert standalone[0]["category"] == "Titles & On-screen Text"
 
           print("QC smoke tests passed.")
           PY
