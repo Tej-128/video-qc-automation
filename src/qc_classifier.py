@@ -123,6 +123,30 @@ def _operational_vo_redo_hint(text: str) -> bool:
     return low.startswith("use vo redo") or low.startswith("use the vo redo") or low.startswith("insert new vo")
 
 
+def _explicit_video_defect_signal(text: str) -> bool:
+    low = str(text or "").casefold()
+    return bool(re.search(
+        r"\b(blurry|glitch|out of sync|incorrect (?:footage|highlight|label)|wrong (?:footage|highlight|label)|"
+        r"missing (?:footage|highlight|label)|footage (?:is|looks) (?:wrong|incorrect|blurry)|"
+        r"not addressed|still not|previous comment)\b",
+        low,
+    ))
+
+
+def _scientific_content_correction_hint(source: dict[str, Any]) -> bool:
+    low = str(source.get("text") or "").casefold()
+    if "vo should specify" in low or "vo does not specify" in low or "specify what is being" in low:
+        return True
+    if "final concentration" in low and ("on-screen text" in low or "onscreen text" in low):
+        return True
+    if (
+        ("modify the vo" in low or "vo to say" in low or "vo says" in low)
+        and ("equation" in low or "calculate" in low)
+    ):
+        return True
+    return False
+
+
 def _editorial_scope_adjustment_hint(source: dict[str, Any]) -> bool:
     text = str(source.get("text") or "")
     low = text.casefold()
@@ -150,14 +174,21 @@ def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]
     text = str(source.get("text") or "")
     normalized: list[dict[str, Any]] = []
 
+    pure_vo_redo = _operational_vo_redo_hint(text)
+    explicit_video_defect = _explicit_video_defect_signal(text)
+
     for raw in issues or []:
         issue = dict(raw)
         issue["error_summary"] = text
-        if _operational_vo_redo_hint(text) and issue.get("team") == "scripting":
+        if (
+            pure_vo_redo
+            and issue.get("team") in {"scripting", "video_editing"}
+            and not explicit_video_defect
+        ):
             issue["team"] = "operational"
             issue["category"] = "VO Redos"
             issue["needs_review"] = False
-            issue["reason"] = "VO redo request is treated as an operational change unless a separate scripting defect is explicitly stated."
+            issue["reason"] = "VO redo request is treated as an operational change unless a separate contributor defect is explicitly stated."
             issue["pattern_label"] = "VO Redo"
         normalized.append(issue)
 
@@ -192,6 +223,26 @@ def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]
             "pattern_label": "Editorial scope adjustment",
         })
         normalized = retained
+
+    if _scientific_content_correction_hint(source):
+        retained_video = [
+            row for row in normalized
+            if row.get("team") == "video_editing" and explicit_video_defect
+        ]
+        best_confidence = max(
+            [float(row.get("confidence") or 0) for row in normalized] or [0.95]
+        )
+        retained_video.append({
+            "team": "scripting",
+            "category": "Scientific Accuracy & Completeness",
+            "error_summary": text,
+            "error_count": 1,
+            "confidence": max(best_confidence, 0.95),
+            "needs_review": False,
+            "reason": "Deterministic scientific-content rule for missing/specification/equation/concentration content.",
+            "pattern_label": "Scientific content completeness",
+        })
+        normalized = retained_video
 
     if bool(source.get("standalone_title_context")) and not normalized:
         normalized.append({
