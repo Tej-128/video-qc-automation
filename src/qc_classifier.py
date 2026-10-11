@@ -192,11 +192,20 @@ def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]
             issue["pattern_label"] = "VO Redo"
         normalized.append(issue)
 
-    if _operational_vo_redo_hint(text) and not any(
-        row.get("team") == "operational" and row.get("category") == "VO Redos"
-        for row in normalized
-    ):
-        normalized.append({
+    if pure_vo_redo:
+        retained = [
+            row
+            for row in normalized
+            if (
+                row.get("team") == "operational"
+                and row.get("category") != "VO Redos"
+            )
+            or (
+                explicit_video_defect
+                and row.get("team") == "video_editing"
+            )
+        ]
+        retained.append({
             "team": "operational",
             "category": "VO Redos",
             "error_summary": text,
@@ -206,6 +215,7 @@ def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]
             "reason": "Deterministic VO redo operational rule.",
             "pattern_label": "VO Redo",
         })
+        normalized = retained
 
     if _editorial_scope_adjustment_hint(source):
         retained = [
