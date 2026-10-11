@@ -891,8 +891,8 @@ def _validation_lists_sheet(wb):
     ws = wb.create_sheet("_Validation Lists")
     ws.append(["Review Actions", "Teams", "Categories"])
     actions = ["Approve", "Change", "Remove"]
-    teams = ["scripting", "video_editing", "none"]
-    categories = list(SCRIPTING_CATEGORIES) + list(VIDEO_CATEGORIES) + ["None"]
+    teams = ["scripting", "video_editing", "operational", "none"]
+    categories = list(SCRIPTING_CATEGORIES) + list(VIDEO_CATEGORIES) + list(OPERATIONAL_CATEGORIES) + ["None"]
     max_rows = max(len(actions), len(teams), len(categories))
     for index in range(max_rows):
         ws.append([
@@ -935,7 +935,10 @@ def _review_overrides_sheet(wb, error_rows, team):
     rows = [
         row
         for row in error_rows
-        if row.get("team") in {team, "review"}
+        if (
+            row.get("team") in {team, "review"}
+            or (team == "video_editing" and row.get("team") == "operational")
+        )
     ]
     rows.sort(
         key=lambda row: (
