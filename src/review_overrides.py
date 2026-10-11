@@ -6,10 +6,10 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from src.qc_classifier import SCRIPTING_CATEGORIES, VIDEO_CATEGORIES
+from src.qc_classifier import OPERATIONAL_CATEGORIES, SCRIPTING_CATEGORIES, VIDEO_CATEGORIES
 from src.version import BUILD_VERSION
 
-VALID_TEAMS = {"scripting", "video_editing", "none"}
+VALID_TEAMS = {"scripting", "video_editing", "operational", "none"}
 VALID_ACTIONS = {"Approve", "Change", "Remove"}
 
 
@@ -125,6 +125,8 @@ def _category_valid(team: str, category: str) -> bool:
         return category in SCRIPTING_CATEGORIES
     if team == "video_editing":
         return category in VIDEO_CATEGORIES
+    if team == "operational":
+        return category in OPERATIONAL_CATEGORIES
     return category in {"", "None"}
 
 
@@ -226,6 +228,10 @@ def apply_review_overrides(
                     str(row.get("classification_reason") or "")
                     + " | Reviewer decision recorded, but extraction remains unverified."
                 ).strip(" |")
+        elif current_team == "operational":
+            row["ai_assignee"] = ""
+            row["needs_review"] = False
+            row["performance_eligible"] = False
         else:
             row["needs_review"] = False
             row["performance_eligible"] = False
