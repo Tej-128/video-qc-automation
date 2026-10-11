@@ -5,7 +5,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from src.qc_classifier import SCRIPTING_CATEGORIES, VIDEO_CATEGORIES
+from src.qc_classifier import OPERATIONAL_CATEGORIES, SCRIPTING_CATEGORIES, VIDEO_CATEGORIES
 from src.report_generator import _performance_eligible_article_ids
 from src.version import BUILD_VERSION
 
@@ -25,15 +25,20 @@ def _sheet_headers(ws) -> list[str]:
 
 
 def _expected_main_headers(team: str) -> list[str]:
-    categories = SCRIPTING_CATEGORIES if team == "scripting" else VIDEO_CATEGORIES
+    categories = (
+        SCRIPTING_CATEGORIES
+        if team == "scripting"
+        else {**VIDEO_CATEGORIES, "VO Redos": OPERATIONAL_CATEGORIES["VO Redos"]}
+    )
     contributor = "Writer" if team == "scripting" else "Video Editor"
     date_header = "Date Script Draft Sent" if team == "scripting" else "Date Video Released"
     headers = ["Article Number", contributor, date_header]
     for category in categories:
         headers.extend([category, "QC Comment"])
-    headers.append("Total Errors")
+    headers.append("Total Errors" if team == "scripting" else "Total Editor Errors")
+    if team == "video_editing":
+        headers.append("Total QC Items")
     return headers
-
 
 def _main_is_sorted(ws) -> bool:
     values = []
@@ -76,7 +81,11 @@ def audit_workbook(
     error_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     wb = load_workbook(BytesIO(payload), data_only=False)
-    categories = SCRIPTING_CATEGORIES if team == "scripting" else VIDEO_CATEGORIES
+    categories = (
+        SCRIPTING_CATEGORIES
+        if team == "scripting"
+        else {**VIDEO_CATEGORIES, "VO Redos": OPERATIONAL_CATEGORIES["VO Redos"]}
+    )
     main_sheet = "QC by Draft Date" if team == "scripting" else "Video QC by Release Date"
 
     required = {
@@ -87,6 +96,8 @@ def audit_workbook(
         "Extraction Audit",
         "Needs Review",
         "Review Overrides",
+        "Comment Coverage",
+        "Excluded Source Comments",
         "Error Detail",
         "Raw Frame.io Comments",
         "_Build Info",
@@ -94,7 +105,7 @@ def audit_workbook(
     required.add("Writer Summary" if team == "scripting" else "Editor Summary")
     required.add("Writer Monthly Trend" if team == "scripting" else "Editor Monthly Trend")
     if team == "video_editing":
-        required.add("Common Error Patterns")
+        required.update({"Common Error Patterns", "Review Stage Breakdown", "Scope Reconciliation"})
 
     checks: dict[str, bool] = {}
     notes: list[str] = []
@@ -109,26 +120,90 @@ def audit_workbook(
         checks["project_row_count"] = ws.max_row - 1 == len(projects)
         checks["main_date_sort"] = _main_is_sorted(ws)
 
-        expected_total = sum(
-            int(row.get("ai_error_count") or 0)
-            for row in error_rows
-            if row.get("team") == team
-        )
-        total_col = ws.max_column
-        actual_total = sum(
-            int(ws.cell(row, total_col).value or 0)
-            for row in range(2, ws.max_row + 1)
-        )
-        checks["main_total_consistency"] = actual_total == expected_total
-        if not checks["main_total_consistency"]:
-            notes.append(
-                f"{team} article total mismatch: workbook={actual_total}, expected={expected_total}."
+        if team == "scripting":
+            expected_total = sum(
+                int(row.get("ai_error_count") or 0)
+                for row in error_rows
+                if row.get("team") == "scripting"
             )
+            actual_total = sum(
+                int(ws.cell(row, ws.max_column).value or 0)
+                for row in range(2, ws.max_row + 1)
+            )
+            checks["main_total_consistency"] = actual_total == expected_total
+        else:
+            expected_editor = sum(
+                int(row.get("ai_error_count") or 0)
+                for row in error_rows
+                if row.get("team") == "video_editing"
+            )
+            expected_vo = sum(
+                int(row.get("ai_error_count") or 0)
+                for row in error_rows
+                if row.get("team") == "operational" and row.get("ai_category") == "VO Redos"
+            )
+            actual_editor = sum(
+                int(ws.cell(row, ws.max_column - 1).value or 0)
+                for row in range(2, ws.max_row + 1)
+            )
+            actual_qc = sum(
+                int(ws.cell(row, ws.max_column).value or 0)
+                for row in range(2, ws.max_row + 1)
+            )
+            checks["main_total_consistency"] = (
+                actual_editor == expected_editor
+                and actual_qc == expected_editor + expected_vo
+            )
+
+        if not checks["main_total_consistency"]:
+            notes.append(f"{team} main-sheet totals do not reconcile to classified rows.")
+
+        by_article = {
+            str(project.get("item_name") or project.get("article_id") or ""): index
+            for index, project in enumerate(
+                sorted(
+                    projects,
+                    key=lambda project: (
+                        project.get("draft_script_sent" if team == "scripting" else "date_video_released") or "",
+                        str(project.get("article_id") or ""),
+                        str(project.get("item_name") or ""),
+                    ),
+                ),
+                start=2,
+            )
+        }
+        verbatim_ok = True
+        category_order = list(categories)
+        for row in error_rows:
+            if team == "scripting":
+                belongs = row.get("team") == "scripting"
+            else:
+                belongs = (
+                    row.get("team") == "video_editing"
+                    or (row.get("team") == "operational" and row.get("ai_category") == "VO Redos")
+                )
+            if not belongs:
+                continue
+            article = str(row.get("item_name") or row.get("article_id") or "")
+            category = str(row.get("ai_category") or "")
+            source = str(row.get("comment_text") or "")
+            if not source or article not in by_article or category not in category_order:
+                continue
+            excel_row = by_article[article]
+            comment_col = 5 + (2 * category_order.index(category))
+            displayed = str(ws.cell(excel_row, comment_col).value or "")
+            if source not in displayed:
+                verbatim_ok = False
+                break
+        checks["main_verbatim_source_comments"] = verbatim_ok
+        if not verbatim_ok:
+            notes.append("At least one main-sheet QC comment does not contain the exact Frame.io source comment.")
     else:
         checks["main_headers"] = False
         checks["project_row_count"] = False
         checks["main_date_sort"] = False
         checks["main_total_consistency"] = False
+        checks["main_verbatim_source_comments"] = False
 
     if "Description" in wb.sheetnames:
         desc = wb["Description"]
@@ -147,28 +222,56 @@ def audit_workbook(
     checks["no_formulas"] = _formula_count(wb) == 0
 
     if "_Build Info" in wb.sheetnames:
-        info = wb["_Build Info"]
-        checks["build_metadata"] = info["B1"].value == BUILD_VERSION
+        checks["build_metadata"] = wb["_Build Info"]["B1"].value == BUILD_VERSION
     else:
         checks["build_metadata"] = False
 
     if "Extraction Audit" in wb.sheetnames:
         audit_ws = wb["Extraction Audit"]
         checks["extraction_audit_row_count"] = audit_ws.max_row - 1 == len(projects)
-        link_ok = True
-        for row in range(2, audit_ws.max_row + 1):
-            value = str(audit_ws.cell(row, 2).value or "")
-            if value and not audit_ws.cell(row, 2).hyperlink:
-                link_ok = False
-                break
+        link_ok = all(
+            not str(audit_ws.cell(row, 2).value or "")
+            or bool(audit_ws.cell(row, 2).hyperlink)
+            for row in range(2, audit_ws.max_row + 1)
+        )
         checks["extraction_links"] = link_ok
     else:
         checks["extraction_audit_row_count"] = False
         checks["extraction_links"] = False
 
+    included_comments = [
+        comment
+        for bundle in bundles
+        for comment in (bundle.get("comments") or [])
+    ]
+    excluded_comments = [
+        comment
+        for bundle in bundles
+        for comment in (bundle.get("excluded_comments") or [])
+    ]
+
+    if "Comment Coverage" in wb.sheetnames:
+        coverage = wb["Comment Coverage"]
+        checks["comment_coverage_row_count"] = coverage.max_row - 1 == len(included_comments)
+        source_values = [
+            str(coverage.cell(row, 6).value or "")
+            for row in range(2, coverage.max_row + 1)
+        ]
+        checks["comment_coverage_verbatim"] = sorted(source_values) == sorted(
+            str(comment.get("text") or "") for comment in included_comments
+        )
+    else:
+        checks["comment_coverage_row_count"] = False
+        checks["comment_coverage_verbatim"] = False
+
+    if "Excluded Source Comments" in wb.sheetnames:
+        excluded = wb["Excluded Source Comments"]
+        checks["excluded_source_row_count"] = excluded.max_row - 1 == len(excluded_comments)
+    else:
+        checks["excluded_source_row_count"] = False
+
     if "Needs Review" in wb.sheetnames:
-        nr = wb["Needs Review"]
-        checks["needs_review_structure"] = nr.max_column >= 11
+        checks["needs_review_structure"] = wb["Needs Review"].max_column >= 12
     else:
         checks["needs_review_structure"] = False
 
@@ -185,20 +288,25 @@ def audit_workbook(
 
     if team == "video_editing" and "Common Error Patterns" in wb.sheetnames:
         patterns = wb["Common Error Patterns"]
-        recurring_only = True
-        for row in range(2, patterns.max_row + 1):
-            total = int(patterns.cell(row, 3).value or 0)
-            articles = int(patterns.cell(row, 4).value or 0)
-            if total < 2 or articles < 2:
-                recurring_only = False
-                break
-        checks["recurring_patterns_only"] = recurring_only
+        observed_total = sum(
+            int(patterns.cell(row, 3).value or 0)
+            for row in range(2, patterns.max_row + 1)
+        )
+        expected_total = sum(
+            int(row.get("ai_error_count") or 0)
+            for row in error_rows
+            if row.get("team") == "video_editing"
+        )
+        checks["pattern_total_reconciles"] = observed_total == expected_total
+        checks["pattern_recurring_flag"] = all(
+            str(patterns.cell(row, 6).value or "") in {"Yes", "No"}
+            for row in range(2, patterns.max_row + 1)
+        )
     else:
-        checks["recurring_patterns_only"] = True
+        checks["pattern_total_reconciles"] = True
+        checks["pattern_recurring_flag"] = True
 
-    eligible_ids = _performance_eligible_article_ids(
-        projects, bundles, error_rows, team
-    )
+    eligible_ids = _performance_eligible_article_ids(projects, bundles, error_rows, team)
     summary_name = "Writer Summary" if team == "scripting" else "Editor Summary"
     if summary_name in wb.sheetnames:
         summary = wb[summary_name]
@@ -212,7 +320,6 @@ def audit_workbook(
 
     passed = sum(1 for value in checks.values() if value)
     score = passed / max(len(checks), 1)
-
     return {
         "team": team,
         "score": score,
@@ -220,7 +327,6 @@ def audit_workbook(
         "notes": notes,
         "performance_eligible_articles": len(eligible_ids),
     }
-
 
 def audit_run(
     *,
@@ -236,6 +342,12 @@ def audit_run(
         for bundle in bundles
         for comment in (bundle.get("comments") or [])
     ]
+    excluded_comments = [
+        comment
+        for bundle in bundles
+        for comment in (bundle.get("excluded_comments") or [])
+    ]
+    source_comments = comments + excluded_comments
 
     resolved_projects = [
         bundle
@@ -259,26 +371,35 @@ def audit_run(
 
     comment_ids = [
         str(row.get("comment_id") or "")
-        for row in comments
+        for row in source_comments
         if row.get("comment_id")
     ]
 
     zero_error_policy_ok = True
     version_exclusion_ok = True
+    source_stage_filter_ok = True
     for bundle in bundles:
         audit = bundle.get("extraction_audit") or {}
         bundle_comments = bundle.get("comments") or []
         if not bundle_comments and audit.get("zero_error_verified"):
-            if audit.get("status") != "verified" or int(audit.get("eligible_versions") or 0) <= 0:
+            if audit.get("status") != "verified" or int(audit.get("checked_versions") or 0) <= 0:
                 zero_error_policy_ok = False
 
-        versions = bundle.get("versions") or []
-        if versions:
-            for index, version in enumerate(versions):
-                expected = 0 < index < len(versions) - 1
-                if bool(version.get("included_for_qc")) != expected:
-                    version_exclusion_ok = False
-                    break
+        for version in bundle.get("versions") or []:
+            if version.get("stage_kind") == "pre_qc" and version.get("included_for_qc"):
+                version_exclusion_ok = False
+            if version.get("is_final_published") and version.get("included_for_qc"):
+                version_exclusion_ok = False
+
+        for comment in bundle.get("comments") or []:
+            if comment.get("stage_kind") == "pre_qc":
+                source_stage_filter_ok = False
+            if comment.get("source_role") in {"Science Interpreter", "Post Shoot Notes Integrator"}:
+                source_stage_filter_ok = False
+
+        for comment in bundle.get("excluded_comments") or []:
+            if comment.get("included_for_qc"):
+                source_stage_filter_ok = False
 
     unverified_article_ids = {
         str((bundle.get("project") or {}).get("article_id") or "")
@@ -307,6 +428,10 @@ def audit_run(
             row.get("team") == "video_editing"
             and row.get("ai_category") not in VIDEO_CATEGORIES
         )
+        or (
+            row.get("team") == "operational"
+            and row.get("ai_category") not in OPERATIONAL_CATEGORIES
+        )
     ]
 
     data_checks = {
@@ -316,6 +441,7 @@ def audit_run(
         "classification_coverage_complete": len(classification_failures) == 0,
         "comment_ids_unique": len(comment_ids) == len(set(comment_ids)),
         "version_exclusion_policy": version_exclusion_ok,
+        "source_stage_filter_policy": source_stage_filter_ok,
         "zero_error_policy": zero_error_policy_ok,
         "unverified_excluded_from_performance": unverified_excluded,
         "team_category_consistency": len(invalid_team_category_rows) == 0,
@@ -346,6 +472,7 @@ def audit_run(
         data_checks["classification_coverage_complete"],
         data_checks["comment_ids_unique"],
         data_checks["version_exclusion_policy"],
+        data_checks["source_stage_filter_policy"],
         data_checks["zero_error_policy"],
         data_checks["unverified_excluded_from_performance"],
         data_checks["team_category_consistency"],
@@ -358,6 +485,7 @@ def audit_run(
         data_checks["frameio_resolution_complete"]
         and data_checks["classification_coverage_complete"]
         and data_checks["version_exclusion_policy"]
+        and data_checks["source_stage_filter_policy"]
         and data_checks["zero_error_policy"]
         and data_checks["unverified_excluded_from_performance"]
         and data_checks["team_category_consistency"]
