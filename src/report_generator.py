@@ -351,9 +351,10 @@ def _description_sheet(wb, team):
 def _article_error_map(error_rows, team, performance_only=False):
     by_article = defaultdict(list)
     for row in error_rows:
-        if row.get("team") != team:
-            continue
-        if performance_only and not row.get("performance_eligible", False):
+        if performance_only:
+            if row.get("team") != team or not row.get("performance_eligible", False):
+                continue
+        elif not _row_in_report(row, team):
             continue
         by_article[str(row.get("article_id") or "")].append(row)
     return by_article
