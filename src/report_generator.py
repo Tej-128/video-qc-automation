@@ -1290,6 +1290,35 @@ def _comment_coverage_sheet(wb, bundles, classifications):
     return ws
 
 
+def _non_performance_items_sheet(wb, error_rows):
+    ws = wb.create_sheet("Non-Performance Items")
+    _style_header(ws, ["Article Number", "Review Stage", "Category", "Source Comment", "Reason", "Timecode", "Frame.io Review Link"])
+    for row in error_rows:
+        if row.get("team") != "operational":
+            continue
+        ws.append([
+            row.get("item_name") or row.get("article_id"),
+            row.get("review_stage", ""),
+            row.get("ai_category", ""),
+            row.get("comment_text", ""),
+            row.get("classification_reason", ""),
+            row.get("timecode", ""),
+            row.get("frameio_review_link", ""),
+        ])
+        _make_link(ws.cell(ws.max_row, 7), str(row.get("frameio_review_link") or ""))
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    ws.column_dimensions["A"].width = 24
+    ws.column_dimensions["B"].width = 22
+    ws.column_dimensions["C"].width = 30
+    ws.column_dimensions["D"].width = 90
+    ws.column_dimensions["E"].width = 70
+    ws.column_dimensions["F"].width = 16
+    ws.column_dimensions["G"].width = 30
+    return ws
+
+
 def _excluded_source_sheet(wb, bundles):
     ws = wb.create_sheet("Excluded Source Comments")
     _style_header(ws, ["Article Number", "Review Stage", "Version File", "Commenter", "Source Role", "Timecode", "Source Comment", "Exclusion Reason"])
@@ -1352,6 +1381,7 @@ def build_report(
         _scope_reconciliation_sheet(wb, projects, bundles, error_rows)
 
     _comment_coverage_sheet(wb, bundles, classifications or [])
+    _non_performance_items_sheet(wb, error_rows)
     _excluded_source_sheet(wb, bundles)
     _analysis_sheet(wb, projects, bundles, error_rows, team)
     _extraction_audit_sheet(wb, bundles)
