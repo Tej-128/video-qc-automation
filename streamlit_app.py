@@ -319,7 +319,9 @@ if result:
 
     st.caption(
         f"Review queue: {metrics.get('needs_review', 0)} item(s) across "
-        f"{metrics.get('review_projects', 0)} project(s). Multiple review items can belong to the same project."
+        f"{metrics.get('review_projects', 0)} project(s). Multiple review items can belong to the same project. "
+        f"Source-stage filtering excluded {metrics.get('excluded_source_comments', 0)} Rough/SI/post-shoot comment(s); "
+        f"{metrics.get('vo_redo_count', 0)} VO redo item(s) are tracked separately from editor performance."
     )
     if metrics.get("unassigned_review_error_count", 0):
         st.caption(
@@ -433,6 +435,7 @@ if result:
                             projects=result["projects"],
                             bundles=result["bundles"],
                             error_rows=reviewed_rows,
+                            classifications=result.get("classifications") or [],
                             review_applied=True,
                         )
                         reviewed_video_report = build_report(
@@ -442,6 +445,7 @@ if result:
                             projects=result["projects"],
                             bundles=result["bundles"],
                             error_rows=reviewed_rows,
+                            classifications=result.get("classifications") or [],
                             review_applied=True,
                         )
                         reviewed_qa = audit_run(
