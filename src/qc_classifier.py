@@ -24,7 +24,12 @@ VIDEO_CATEGORIES = {
     "Previous Comments Unaddressed": "Comments from previous versions left unaddressed in new versions (editing and non-editing related)",
 }
 
-ALL_CATEGORIES = list(SCRIPTING_CATEGORIES) + list(VIDEO_CATEGORIES) + ["None"]
+OPERATIONAL_CATEGORIES = {
+    "VO Redos": "Voice-over redo/replacement requests that are operational changes and are not attributable to the video editor unless a separate editing execution error is explicitly stated.",
+    "Editorial / Scope Adjustment": "Late editorial, scope, title-card, or reference changes where the comment requests a new/changed deliverable without evidence that the scripting or video-editing contributor made the original error.",
+}
+
+ALL_CATEGORIES = list(SCRIPTING_CATEGORIES) + list(VIDEO_CATEGORIES) + list(OPERATIONAL_CATEGORIES) + ["None"]
 
 SCHEMA = {
     "type": "object",
@@ -40,7 +45,7 @@ SCHEMA = {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "team": {"type": "string", "enum": ["scripting", "video_editing", "none"]},
+                                "team": {"type": "string", "enum": ["scripting", "video_editing", "operational", "none"]},
                                 "category": {"type": "string", "enum": ALL_CATEGORIES},
                                 "error_summary": {"type": "string"},
                                 "error_count": {"type": "integer", "minimum": 0, "maximum": 20},
@@ -69,6 +74,7 @@ ProgressCallback = Callable[[int, int], None]
 def _system_prompt() -> str:
     scripting = "\n".join(f"- {k}: {v}" for k, v in SCRIPTING_CATEGORIES.items())
     video = "\n".join(f"- {k}: {v}" for k, v in VIDEO_CATEGORIES.items())
+    operational = "\n".join(f"- {k}: {v}" for k, v in OPERATIONAL_CATEGORIES.items())
     return f"""You classify JoVE production QC comments into atomic errors for a monthly performance report.
 
 Scripting categories:
@@ -77,19 +83,25 @@ Scripting categories:
 Video-editing categories:
 {video}
 
+Operational/non-performance categories:
+{operational}
+
 Rules:
 1. Analyze every supplied comment, including replies, but do not count acknowledgements, questions, confirmations, or conversational replies as errors unless they clearly contain a new QC correction.
 2. One comment may contain multiple independent corrections. Split them into separate issue objects when categories differ. If a comment clearly identifies multiple occurrences of the same error type, keep one issue object and set error_count to the explicit or clearly implied number; otherwise use 1.
 3. Use ONLY the category definitions above. Do not broaden or invent category definitions.
-4. Scripting means the underlying script/content/instruction is wrong. Video editing means the underlying instruction is acceptable but its audiovisual execution is wrong. A requested change to narration wording, scientific/procedural wording, terminology, measurements, or the content that should have been scripted is scripting unless the comment clearly says the script/instruction was already correct and the editor/VO execution failed to follow it.
-5. Hashtags are supporting evidence, not a substitute for analyzing the actual error. If #scripting or #video_editing is explicitly present, treat it as a strong attribution hint because those labels were proposed for team attribution. Other operational tags such as #video or #audio must not by themselves decide who introduced the error.
-6. Use Previous Comments Unaddressed ONLY when repeated_from_prior_version=true. That flag is created by deterministic cross-version comparison. If repeat_language_without_match=true but repeated_from_prior_version=false, classify the actual underlying issue instead and set needs_review=true because the wording references an earlier version without enough matching evidence.
-7. If there is no genuine QC error, return an empty issues array.
-8. If the team or category is ambiguous, choose the most plausible one but set needs_review=true and lower confidence.
-9. Never invent facts outside the comment text and supplied metadata.
-10. Never paraphrase, summarize, rewrite, clean up, shorten, expand, correct, or otherwise alter the reviewer comment. Set error_summary to the exact supplied comment text, character-for-character. The application also enforces this deterministically downstream.
-11. pattern_label must be a short normalized recurring-pattern phrase, reusing the same wording for similar errors across different comments (for example: "Footage pacing", "Audio-video mismatch", "Incorrect highlighting", "On-screen text formatting").
-12. Return exactly one classification object for every supplied record_key, even when its issues array is empty.
+4. Scripting means the underlying script/content/instruction is wrong. Video editing means the approved instruction/content is acceptable but its audiovisual execution is wrong. Scientific/procedural meaning, equations, measurements, terminology, missing procedural detail, or what must be stated belongs in Scientific Accuracy & Completeness. Language & Narration is only grammar, wording, sentence flow, pauses, pronunciation, or clarity where scientific/procedural meaning is unchanged.
+5. A comment that mainly says "Use VO redo", "use the VO redo", or "Insert new VO" is normally operational category VO Redos, not a scripting or video-editor error, unless the comment independently states the underlying script was wrong (for example #scripting, "VO should specify...", "incorrect wording") or identifies a separate video execution error. One comment may therefore produce an operational VO Redo plus a separate video-editing issue.
+6. Late editorial/scope changes such as adding a new title card/reference because content is no longer shown, or changing deliverables without evidence the contributor made the original mistake, are Operational / Editorial / Scope Adjustment rather than a performance error. If you cannot tell whether it was an original contributor error or a late change, use operational and needs_review=true.
+7. Standalone replacement title/text comments can be genuine corrections even when they contain no verb such as "edit" or "change". Use previous_same_version_text, next_same_version_text, and standalone_title_context to avoid silently dropping them.
+8. Hashtags are supporting evidence, not a substitute for analyzing the actual error. If #scripting or #video_editing is explicitly present, treat it as a strong attribution hint because those labels were proposed for team attribution. Other operational tags such as #video or #audio must not by themselves decide who introduced the error.
+9. Use Previous Comments Unaddressed ONLY when repeated_from_prior_version=true. That flag is created by deterministic cross-version comparison. If repeat_language_without_match=true but repeated_from_prior_version=false, classify the actual underlying issue instead and set needs_review=true because the wording references an earlier version without enough matching evidence.
+10. If there is no genuine QC error, return an empty issues array.
+11. If the team or category is ambiguous, choose the most plausible one but set needs_review=true and lower confidence.
+12. Never invent facts outside the comment text and supplied metadata.
+13. Never paraphrase, summarize, rewrite, clean up, shorten, expand, correct, or otherwise alter the reviewer comment. Set error_summary to the exact supplied comment text, character-for-character. The application also enforces this deterministically downstream.
+14. pattern_label must be a short normalized recurring-pattern phrase, reusing the same wording for similar errors across different comments (for example: "Footage pacing", "Audio-video mismatch", "Incorrect highlighting", "On-screen text formatting").
+15. Return exactly one classification object for every supplied record_key, even when its issues array is empty.
 """
 
 
@@ -103,6 +115,58 @@ def _extract_output_text(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _operational_vo_redo_hint(text: str) -> bool:
+    low = str(text or "").strip().casefold()
+    if "#scripting" in low or "vo should" in low or "narration should" in low or "script should" in low:
+        return False
+    return low.startswith("use vo redo") or low.startswith("use the vo redo") or low.startswith("insert new vo")
+
+
+def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    text = str(source.get("text") or "")
+    normalized: list[dict[str, Any]] = []
+
+    for raw in issues or []:
+        issue = dict(raw)
+        issue["error_summary"] = text
+        if _operational_vo_redo_hint(text) and issue.get("team") == "scripting":
+            issue["team"] = "operational"
+            issue["category"] = "VO Redos"
+            issue["needs_review"] = False
+            issue["reason"] = "VO redo request is treated as an operational change unless a separate scripting defect is explicitly stated."
+            issue["pattern_label"] = "VO Redo"
+        normalized.append(issue)
+
+    if _operational_vo_redo_hint(text) and not any(
+        row.get("team") == "operational" and row.get("category") == "VO Redos"
+        for row in normalized
+    ):
+        normalized.append({
+            "team": "operational",
+            "category": "VO Redos",
+            "error_summary": text,
+            "error_count": 1,
+            "confidence": 0.99,
+            "needs_review": False,
+            "reason": "Deterministic VO redo operational rule.",
+            "pattern_label": "VO Redo",
+        })
+
+    if bool(source.get("standalone_title_context")) and not normalized:
+        normalized.append({
+            "team": "scripting",
+            "category": "Titles & On-screen Text",
+            "error_summary": text,
+            "error_count": 1,
+            "confidence": 0.80,
+            "needs_review": True,
+            "reason": "Standalone replacement text appears between title-edit comments; retained for review instead of being silently dropped.",
+            "pattern_label": "Title wording",
+        })
+
+    return normalized
+
+
 def _classify_batch(
     api_key: str,
     batch: list[dict[str, Any]],
@@ -111,10 +175,12 @@ def _classify_batch(
 ) -> tuple[int, list[dict[str, Any]]]:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     key_to_comment_id: dict[str, str] = {}
+    key_to_source: dict[str, dict[str, Any]] = {}
     user_payload = []
     for index, row in enumerate(batch, start=1):
         record_key = f"B{batch_number:03d}C{index:03d}"
         key_to_comment_id[record_key] = str(row.get("comment_id") or "")
+        key_to_source[record_key] = row
         user_payload.append(
             {
                 "record_key": record_key,
@@ -123,6 +189,11 @@ def _classify_batch(
                 "parent_comment_id": row.get("parent_comment_id", ""),
                 "commenter": row.get("commenter", ""),
                 "text": row.get("text", ""),
+                "review_stage": row.get("review_stage", ""),
+                "source_role": row.get("source_role", ""),
+                "previous_same_version_text": row.get("previous_same_version_text", ""),
+                "next_same_version_text": row.get("next_same_version_text", ""),
+                "standalone_title_context": bool(row.get("standalone_title_context")),
                 "repeated_from_prior_version": bool(row.get("repeated_from_prior_version")),
                 "prior_match_text": row.get("prior_match_text", ""),
                 "prior_match_score": row.get("prior_match_score", 0),
@@ -189,7 +260,10 @@ def _classify_batch(
                 normalized_rows.append(
                     {
                         "comment_id": key_to_comment_id[record_key],
-                        "issues": row.get("issues") or [],
+                        "issues": _normalize_model_issues(
+                            key_to_source[record_key],
+                            row.get("issues") or [],
+                        ),
                     }
                 )
             return batch_number, normalized_rows
@@ -331,6 +405,8 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     "asset_name": resolution.asset_name,
                     "version_number": comment.get("version_number"),
                     "version_name": comment.get("version_name", ""),
+                    "review_stage": comment.get("review_stage", ""),
+                    "source_role": comment.get("source_role", ""),
                     "comment_id": comment_id,
                     "parent_comment_id": comment.get("parent_comment_id", ""),
                     "is_reply": bool(comment.get("is_reply")),
@@ -368,6 +444,7 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                 valid_pair = (
                     (team == "scripting" and category in SCRIPTING_CATEGORIES)
                     or (team == "video_editing" and category in VIDEO_CATEGORIES)
+                    or (team == "operational" and category in OPERATIONAL_CATEGORIES)
                 )
                 if not valid_pair:
                     error_rows.append({
@@ -410,7 +487,10 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     })
                     continue
 
-                if team == "scripting":
+                if team == "operational":
+                    assignee = ""
+                    attribution_review = False
+                elif team == "scripting":
                     assignee = project.get("scriptwriter", "")
                     attribution_review = not bool(assignee)
                 else:
@@ -423,16 +503,17 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                 confidence = float(issue.get("confidence") or 0)
                 needs_review = (
                     bool(issue.get("needs_review"))
-                    or confidence < 0.78
+                    or (team != "operational" and confidence < 0.78)
                     or attribution_review
-                    or not extraction_verified
+                    or (team != "operational" and not extraction_verified)
                 )
                 # Category/wording uncertainty remains visible in Needs Review, but
                 # a verified project with a clear contributor is counted provisionally.
                 # Attribution blockers (handover/missing contributor) and extraction
                 # uncertainty remain excluded until resolved.
                 performance_eligible = (
-                    bool(assignee)
+                    team in {"scripting", "video_editing"}
+                    and bool(assignee)
                     and extraction_verified
                     and not attribution_review
                 )
@@ -454,6 +535,8 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     "asset_name": resolution.asset_name,
                     "version_number": comment.get("version_number"),
                     "version_name": comment.get("version_name", ""),
+                    "review_stage": comment.get("review_stage", ""),
+                    "source_role": comment.get("source_role", ""),
                     "comment_id": comment.get("comment_id", ""),
                     "parent_comment_id": comment.get("parent_comment_id", ""),
                     "is_reply": bool(comment.get("is_reply")),
