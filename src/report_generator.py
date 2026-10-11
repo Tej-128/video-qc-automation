@@ -11,7 +11,7 @@ from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from src.qc_classifier import SCRIPTING_CATEGORIES, VIDEO_CATEGORIES
+from src.qc_classifier import OPERATIONAL_CATEGORIES, SCRIPTING_CATEGORIES, VIDEO_CATEGORIES
 from src.version import BUILD_LABEL, BUILD_VERSION
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
@@ -111,7 +111,22 @@ def _article_contributor(project: dict[str, Any], team: str) -> str:
 
 
 def _category_config(team: str) -> dict[str, str]:
+    if team == "scripting":
+        return SCRIPTING_CATEGORIES
+    return {**VIDEO_CATEGORIES, "VO Redos": OPERATIONAL_CATEGORIES["VO Redos"]}
+
+
+def _performance_category_config(team: str) -> dict[str, str]:
     return SCRIPTING_CATEGORIES if team == "scripting" else VIDEO_CATEGORIES
+
+
+def _row_in_report(row: dict[str, Any], team: str) -> bool:
+    if team == "scripting":
+        return row.get("team") == "scripting"
+    return (
+        row.get("team") == "video_editing"
+        or (row.get("team") == "operational" and row.get("ai_category") == "VO Redos")
+    )
 
 
 def _team_config(team: str) -> dict[str, str]:
@@ -214,7 +229,9 @@ def _main_sheet(wb, projects, bundles, error_rows, team):
     headers = ["Article Number", cfg["contributor"], cfg["date_header"]]
     for category in categories:
         headers.extend([category, "QC Comment"])
-    headers.append("Total Errors")
+    headers.append("Total Errors" if team == "scripting" else "Total Editor Errors")
+    if team == "video_editing":
+        headers.append("Total QC Items")
     _style_main_header(ws, headers)
 
     ws.column_dimensions["A"].width = 24
@@ -231,7 +248,7 @@ def _main_sheet(wb, projects, bundles, error_rows, team):
 
     by_article: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in error_rows:
-        if row.get("team") == team:
+        if _row_in_report(row, team):
             by_article[str(row.get("article_id") or "")].append(row)
 
     bundle_by_article = _bundle_map(bundles)
@@ -252,14 +269,19 @@ def _main_sheet(wb, projects, bundles, error_rows, team):
             _article_contributor(project, team),
             _as_date(project.get(cfg["date_key"])),
         ]
-        total = 0
+        total_editor_errors = 0
+        total_qc_items = 0
         for category in categories:
             category_rows = [row for row in rows if row.get("ai_category") == category]
             count = sum(int(row.get("ai_error_count") or 0) for row in category_rows)
-            total += count
+            total_qc_items += count
+            if team == "scripting" or category in VIDEO_CATEGORIES:
+                total_editor_errors += count
             comments = _unique_texts(category_rows)
-            values.extend([count, "; ".join(comments) if comments else None])
-        values.append(total)
+            values.extend([count, "\n\n".join(comments) if comments else None])
+        values.append(total_editor_errors)
+        if team == "video_editing":
+            values.append(total_qc_items)
         ws.append(values)
 
         row_number = ws.max_row
@@ -341,7 +363,9 @@ def _monthly_trend_sheet(wb, projects, bundles, error_rows, team):
     cfg = _team_config(team)
     categories = _category_config(team)
     ws = wb.create_sheet("Monthly Trend")
-    headers = [cfg["trend_month_header"], "Verified Articles", *categories.keys(), "Total Errors", "Errors per Article"]
+    headers = [cfg["trend_month_header"], "Verified Articles", *categories.keys(), "Total Editor Errors" if team == "video_editing" else "Total Errors", "Errors per Article"]
+    if team == "video_editing":
+        headers.insert(-1, "Total QC Items")
     _style_header(ws, headers)
     ws.column_dimensions["A"].width = 38
     ws.column_dimensions["B"].width = 27
@@ -366,9 +390,18 @@ def _monthly_trend_sheet(wb, projects, bundles, error_rows, team):
     for month in sorted(grouped):
         data = grouped[month]
         counts = [data[category] for category in categories]
-        total = sum(counts)
+        total_qc = sum(counts)
+        total_perf = (
+            sum(data[category] for category in VIDEO_CATEGORIES)
+            if team == "video_editing"
+            else total_qc
+        )
         articles = len(data["articles"])
-        ws.append([month, articles, *counts, total, total / articles if articles else 0])
+        row = [month, articles, *counts, total_perf]
+        if team == "video_editing":
+            row.append(total_qc)
+        row.append(total_perf / articles if articles else 0)
+        ws.append(row)
 
     if ws.max_row > 1:
         total_col = 3 + len(categories)
@@ -430,7 +463,7 @@ def _performance_errors(error_rows, team, eligible_ids: set[str] | None = None):
 
 def _summary_sheet(wb, projects, bundles, error_rows, team):
     cfg = _team_config(team)
-    categories = _category_config(team)
+    categories = _performance_category_config(team)
     ws = wb.create_sheet(cfg["summary"])
     headers = [cfg["contributor"], "Articles", *categories.keys(), "Total Errors", "Errors per Article"]
     _style_header(ws, headers)
@@ -472,7 +505,7 @@ def _summary_sheet(wb, projects, bundles, error_rows, team):
 
 def _contributor_monthly_sheet(wb, projects, bundles, error_rows, team):
     cfg = _team_config(team)
-    categories = _category_config(team)
+    categories = _performance_category_config(team)
     ws = wb.create_sheet(cfg["contributor_trend"])
     headers = [cfg["contributor"], cfg["trend_month_header"], "Performance-Eligible Articles", *categories.keys(), "Total Errors", "Errors per Article"]
     _style_header(ws, headers)
@@ -1115,7 +1148,7 @@ def _canonical_pattern(category: str, pattern: str) -> str:
 
 def _pattern_sheet(wb, error_rows):
     ws = wb.create_sheet("Common Error Patterns")
-    _style_header(ws, ["Category", "Recurring Pattern", "Total Count", "Articles", "Editors"])
+    _style_header(ws, ["Category", "Pattern", "Total Count", "Articles", "Editors", "Recurring?"])
 
     grouped = defaultdict(lambda: {"count": 0, "articles": set(), "editors": set()})
     for row in error_rows:
@@ -1133,8 +1166,7 @@ def _pattern_sheet(wb, error_rows):
     for (category, pattern), info in sorted(
         grouped.items(), key=lambda item: (-item[1]["count"], item[0])
     ):
-        if info["count"] < 2 or len(info["articles"]) < 2:
-            continue
+        recurring = info["count"] >= 2 and len(info["articles"]) >= 2
         ws.append(
             [
                 category,
@@ -1142,8 +1174,84 @@ def _pattern_sheet(wb, error_rows):
                 info["count"],
                 len(info["articles"]),
                 len(info["editors"]),
+                "Yes" if recurring else "No",
             ]
         )
+    return ws
+
+
+def _stage_breakdown_sheet(wb, error_rows):
+    ws = wb.create_sheet("Review Stage Breakdown")
+    categories = {**VIDEO_CATEGORIES, "VO Redos": OPERATIONAL_CATEGORIES["VO Redos"]}
+    _style_header(ws, ["Review Stage", "Articles", *categories.keys(), "Total Editor Errors", "Total QC Items"])
+    grouped = defaultdict(lambda: {"articles": set(), **{category: 0 for category in categories}})
+    for row in error_rows:
+        if not _row_in_report(row, "video_editing"):
+            continue
+        stage = str(row.get("review_stage") or "Stage Unknown")
+        grouped[stage]["articles"].add(str(row.get("article_id") or ""))
+        category = str(row.get("ai_category") or "")
+        if category in categories:
+            grouped[stage][category] += int(row.get("ai_error_count") or 0)
+    for stage, data in sorted(grouped.items()):
+        counts = [data[category] for category in categories]
+        editor_total = sum(data[category] for category in VIDEO_CATEGORIES)
+        ws.append([stage, len(data["articles"]), *counts, editor_total, sum(counts)])
+    return ws
+
+
+def _comment_coverage_sheet(wb, bundles, classifications):
+    ws = wb.create_sheet("Comment Coverage")
+    _style_header(ws, ["Article Number", "Review Stage", "Version File", "Commenter", "Timecode", "Source Comment", "Classification Outcome"])
+    by_comment = {str(row.get("comment_id") or ""): row for row in classifications}
+    for bundle in bundles:
+        project = bundle.get("project") or {}
+        for comment in bundle.get("comments") or []:
+            result = by_comment.get(str(comment.get("comment_id") or ""), {})
+            issues = result.get("issues") or []
+            if result.get("_classification_error"):
+                outcome = "Needs Review - classification failure"
+            elif not issues:
+                outcome = "No counted QC error"
+            else:
+                outcome = "; ".join(
+                    f"{issue.get('team')}: {issue.get('category')} x{int(issue.get('error_count') or 0)}"
+                    for issue in issues
+                )
+            ws.append([
+                project.get("item_name") or comment.get("article_id"),
+                comment.get("review_stage", ""),
+                comment.get("version_name", ""),
+                comment.get("commenter", ""),
+                comment.get("timestamp", ""),
+                comment.get("text", ""),
+                outcome,
+            ])
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    return ws
+
+
+def _excluded_source_sheet(wb, bundles):
+    ws = wb.create_sheet("Excluded Source Comments")
+    _style_header(ws, ["Article Number", "Review Stage", "Version File", "Commenter", "Source Role", "Timecode", "Source Comment", "Exclusion Reason"])
+    for bundle in bundles:
+        project = bundle.get("project") or {}
+        for comment in bundle.get("excluded_comments") or []:
+            ws.append([
+                project.get("item_name") or comment.get("article_id"),
+                comment.get("review_stage", ""),
+                comment.get("version_name", ""),
+                comment.get("commenter", ""),
+                comment.get("source_role", ""),
+                comment.get("timestamp", ""),
+                comment.get("text", ""),
+                comment.get("exclusion_reason", ""),
+            ])
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
     return ws
 
 
@@ -1166,6 +1274,7 @@ def build_report(
     projects: list[dict[str, Any]],
     bundles: list[dict[str, Any]],
     error_rows: list[dict[str, Any]],
+    classifications: list[dict[str, Any]] | None = None,
     review_applied: bool = False,
 ) -> bytes:
     if team not in {"scripting", "video_editing"}:
@@ -1182,7 +1291,10 @@ def build_report(
 
     if team == "video_editing":
         _pattern_sheet(wb, error_rows)
+        _stage_breakdown_sheet(wb, error_rows)
 
+    _comment_coverage_sheet(wb, bundles, classifications or [])
+    _excluded_source_sheet(wb, bundles)
     _analysis_sheet(wb, projects, bundles, error_rows, team)
     _extraction_audit_sheet(wb, bundles)
     _needs_review_sheet(wb, bundles, error_rows, team)
