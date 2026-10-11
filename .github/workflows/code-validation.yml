@@ -514,5 +514,17 @@ jobs:
           assert vo_video_guess[0]["team"] == "operational"
           assert vo_video_guess[0]["category"] == "VO Redos"
 
+          vo_multi_guess = _normalize_model_issues(
+              {"text": "Use VO redo for step 3.1 for revised narration.", "review_stage": "2nd Proof"},
+              [
+                  {"team": "scripting", "category": "Language & Narration", "error_summary": "x", "error_count": 1, "confidence": 0.8, "needs_review": False, "reason": "x", "pattern_label": "x"},
+                  {"team": "video_editing", "category": "Audio/Visual", "error_summary": "x", "error_count": 1, "confidence": 0.8, "needs_review": False, "reason": "x", "pattern_label": "x"},
+              ],
+          )
+          assert len(vo_multi_guess) == 1
+          assert vo_multi_guess[0]["team"] == "operational"
+          assert vo_multi_guess[0]["category"] == "VO Redos"
+          assert vo_multi_guess[0]["error_count"] == 1
+
           print("QC smoke tests passed.")
           PY
