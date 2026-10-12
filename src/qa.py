@@ -263,7 +263,7 @@ def audit_workbook(
         checks["excluded_version_policy_rows"] = False
 
     if "Needs Review" in wb.sheetnames:
-        checks["needs_review_structure"] = wb["Needs Review"].max_column >= 12
+        checks["needs_review_structure"] = wb["Needs Review"].max_column >= 11
     else:
         checks["needs_review_structure"] = False
 
