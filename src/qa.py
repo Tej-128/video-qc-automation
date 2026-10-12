@@ -98,7 +98,7 @@ def audit_workbook(
         "Review Overrides",
         "Comment Coverage",
         "Non-Performance Items",
-        "Excluded Source Comments",
+        "Excluded Version Policy",
         "Error Detail",
         "Raw Frame.io Comments",
         "_Build Info",
@@ -106,7 +106,7 @@ def audit_workbook(
     required.add("Writer Summary" if team == "scripting" else "Editor Summary")
     required.add("Writer Monthly Trend" if team == "scripting" else "Editor Monthly Trend")
     if team == "video_editing":
-        required.update({"Common Error Patterns", "Review Stage Breakdown", "Scope Reconciliation"})
+        required.update({"Common Error Patterns", "Frame.io Version Breakdown", "Scope Reconciliation"})
 
     checks: dict[str, bool] = {}
     notes: list[str] = []
@@ -235,11 +235,7 @@ def audit_workbook(
         for bundle in bundles
         for comment in (bundle.get("comments") or [])
     ]
-    excluded_comments = [
-        comment
-        for bundle in bundles
-        for comment in (bundle.get("excluded_comments") or [])
-    ]
+    excluded_comments = []
 
     if "Comment Coverage" in wb.sheetnames:
         coverage = wb["Comment Coverage"]
@@ -255,11 +251,16 @@ def audit_workbook(
         checks["comment_coverage_row_count"] = False
         checks["comment_coverage_verbatim"] = False
 
-    if "Excluded Source Comments" in wb.sheetnames:
-        excluded = wb["Excluded Source Comments"]
-        checks["excluded_source_row_count"] = excluded.max_row - 1 == len(excluded_comments)
+    if "Excluded Version Policy" in wb.sheetnames:
+        excluded = wb["Excluded Version Policy"]
+        expected_excluded_versions = sum(
+            min(2, len(bundle.get("versions") or []))
+            for bundle in bundles
+            if bundle.get("versions")
+        )
+        checks["excluded_version_policy_rows"] = excluded.max_row - 1 == expected_excluded_versions
     else:
-        checks["excluded_source_row_count"] = False
+        checks["excluded_version_policy_rows"] = False
 
     if "Needs Review" in wb.sheetnames:
         checks["needs_review_structure"] = wb["Needs Review"].max_column >= 12
@@ -368,29 +369,28 @@ def audit_run(
 
     zero_error_policy_ok = True
     version_exclusion_ok = True
-    source_stage_filter_ok = True
     for bundle in bundles:
         audit = bundle.get("extraction_audit") or {}
         bundle_comments = bundle.get("comments") or []
         if not bundle_comments and audit.get("zero_error_verified"):
-            if audit.get("status") != "verified" or int(audit.get("checked_versions") or 0) <= 0:
+            if audit.get("status") != "verified" or int(audit.get("eligible_versions") or 0) <= 0:
                 zero_error_policy_ok = False
 
-        for version in bundle.get("versions") or []:
-            if version.get("stage_kind") == "pre_qc" and version.get("included_for_qc"):
+        versions = bundle.get("versions") or []
+        for index, version in enumerate(versions):
+            expected = 0 < index < len(versions) - 1
+            if bool(version.get("included_for_qc")) != expected:
                 version_exclusion_ok = False
-            if version.get("is_final_published") and version.get("included_for_qc"):
-                version_exclusion_ok = False
+                break
 
-        for comment in bundle.get("comments") or []:
-            if comment.get("stage_kind") == "pre_qc":
-                source_stage_filter_ok = False
-            if comment.get("source_role") in {"Science Interpreter", "Post Shoot Notes Integrator"}:
-                source_stage_filter_ok = False
-
-        for comment in bundle.get("excluded_comments") or []:
-            if comment.get("included_for_qc"):
-                source_stage_filter_ok = False
+        included_versions = {
+            int(comment.get("version_number") or 0)
+            for comment in bundle.get("comments") or []
+        }
+        if 1 in included_versions:
+            version_exclusion_ok = False
+        if versions and len(versions) in included_versions:
+            version_exclusion_ok = False
 
     unverified_article_ids = {
         str((bundle.get("project") or {}).get("article_id") or "")
@@ -432,7 +432,6 @@ def audit_run(
         "classification_coverage_complete": len(classification_failures) == 0,
         "comment_ids_unique": len(comment_ids) == len(set(comment_ids)),
         "version_exclusion_policy": version_exclusion_ok,
-        "source_stage_filter_policy": source_stage_filter_ok,
         "zero_error_policy": zero_error_policy_ok,
         "unverified_excluded_from_performance": unverified_excluded,
         "team_category_consistency": len(invalid_team_category_rows) == 0,
@@ -463,7 +462,6 @@ def audit_run(
         data_checks["classification_coverage_complete"],
         data_checks["comment_ids_unique"],
         data_checks["version_exclusion_policy"],
-        data_checks["source_stage_filter_policy"],
         data_checks["zero_error_policy"],
         data_checks["unverified_excluded_from_performance"],
         data_checks["team_category_consistency"],
@@ -476,7 +474,6 @@ def audit_run(
         data_checks["frameio_resolution_complete"]
         and data_checks["classification_coverage_complete"]
         and data_checks["version_exclusion_policy"]
-        and data_checks["source_stage_filter_policy"]
         and data_checks["zero_error_policy"]
         and data_checks["unverified_excluded_from_performance"]
         and data_checks["team_category_consistency"]
