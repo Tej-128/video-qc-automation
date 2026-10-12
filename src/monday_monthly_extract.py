@@ -24,8 +24,6 @@ COLUMN_IDS = {
     "science_video_editor": "people_11",
     "finishing_editor": "people5",
     "rough_editor": "people_1",
-    "science_interpreter": "people0",
-    "post_shoot_notes_integrator": "people8",
 }
 
 FIRST_PAGE_QUERY = """
@@ -47,9 +45,7 @@ query MonthlyQcFirstPage($boardId: ID!, $limit: Int!) {
           "link_1",
           "people_11",
           "people5",
-          "people_1",
-          "people0",
-          "people8"
+          "people_1"
         ]) {
           id
           text
@@ -209,8 +205,6 @@ def normalize(item: dict[str, Any]) -> dict[str, str]:
         "science_video_editor": text("science_video_editor"),
         "finishing_editor": text("finishing_editor"),
         "rough_editor": text("rough_editor"),
-        "science_interpreter": text("science_interpreter"),
-        "post_shoot_notes_integrator": text("post_shoot_notes_integrator"),
     }
 
 
@@ -283,8 +277,6 @@ def main() -> int:
         "science_video_editor",
         "finishing_editor",
         "rough_editor",
-        "science_interpreter",
-        "post_shoot_notes_integrator",
     ]
     with csv_path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
