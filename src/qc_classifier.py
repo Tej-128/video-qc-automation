@@ -158,16 +158,7 @@ def _editorial_scope_adjustment_hint(source: dict[str, Any]) -> bool:
     if "see text protocol" in low and ("add on-screen text" in low or "add onscreen text" in low):
         return True
 
-    stage = str(source.get("review_stage") or "")
-    later_proof = bool(re.match(r"^[2-9]\d*(?:nd|rd|th) Proof$", stage))
-    late_title_change = bool(
-        re.search(r"\b(edit title|insert section title card|add on-screen text|add onscreen text)\b", low)
-    )
-    return bool(
-        later_proof
-        and late_title_change
-        and not source.get("repeated_from_prior_version")
-    )
+    return False
 
 
 def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -291,8 +282,9 @@ def _classify_batch(
                 "parent_comment_id": row.get("parent_comment_id", ""),
                 "commenter": row.get("commenter", ""),
                 "text": row.get("text", ""),
-                "review_stage": row.get("review_stage", ""),
-                "source_role": row.get("source_role", ""),
+                "frameio_version": row.get("version_label") or (
+                    f"v{row.get('version_number')}" if row.get("version_number") else ""
+                ),
                 "previous_same_version_text": row.get("previous_same_version_text", ""),
                 "next_same_version_text": row.get("next_same_version_text", ""),
                 "standalone_title_context": bool(row.get("standalone_title_context")),
@@ -507,8 +499,9 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     "asset_name": resolution.asset_name,
                     "version_number": comment.get("version_number"),
                     "version_name": comment.get("version_name", ""),
-                    "review_stage": comment.get("review_stage", ""),
-                    "source_role": comment.get("source_role", ""),
+                    "version_label": comment.get("version_label") or (
+                        f"v{comment.get('version_number')}" if comment.get("version_number") else ""
+                    ),
                     "comment_id": comment_id,
                     "parent_comment_id": comment.get("parent_comment_id", ""),
                     "is_reply": bool(comment.get("is_reply")),
@@ -559,6 +552,9 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                         "asset_name": resolution.asset_name,
                         "version_number": comment.get("version_number"),
                         "version_name": comment.get("version_name", ""),
+                        "version_label": comment.get("version_label") or (
+                            f"v{comment.get('version_number')}" if comment.get("version_number") else ""
+                        ),
                         "comment_id": comment.get("comment_id", ""),
                         "parent_comment_id": comment.get("parent_comment_id", ""),
                         "is_reply": bool(comment.get("is_reply")),
@@ -637,8 +633,9 @@ def attach_classifications(projects: list[dict[str, Any]], classifications: list
                     "asset_name": resolution.asset_name,
                     "version_number": comment.get("version_number"),
                     "version_name": comment.get("version_name", ""),
-                    "review_stage": comment.get("review_stage", ""),
-                    "source_role": comment.get("source_role", ""),
+                    "version_label": comment.get("version_label") or (
+                        f"v{comment.get('version_number')}" if comment.get("version_number") else ""
+                    ),
                     "comment_id": comment.get("comment_id", ""),
                     "parent_comment_id": comment.get("parent_comment_id", ""),
                     "is_reply": bool(comment.get("is_reply")),
