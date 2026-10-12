@@ -372,14 +372,8 @@ def _run_pipeline_once(
             "frameio_resolved": len(resolved),
             "frameio_unresolved": len(unresolved),
             "comments_analyzed": len(all_comments),
-            "source_comments_seen": sum(
-                int((bundle.get("extraction_audit") or {}).get("source_comment_count") or 0)
-                for bundle in bundles
-            ),
-            "excluded_source_comments": sum(
-                len(bundle.get("excluded_comments") or [])
-                for bundle in bundles
-            ),
+            "source_comments_seen": len(all_comments),
+            "excluded_source_comments": 0,
             "classified_error_rows": len(error_rows),
             "total_error_count": sum(
                 int(row.get("ai_error_count") or 0)
