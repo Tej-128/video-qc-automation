@@ -2,7 +2,7 @@ name: Code Validation
 
 on:
   push:
-    branches: [main]
+    branches: [main, qc-frameio-positional-v29]
   workflow_dispatch:
 
 permissions:
@@ -219,8 +219,8 @@ jobs:
               assert wb["_Validation Lists"].sheet_state == "hidden"
               assert wb["Extraction Audit"].max_row == 3
               assert wb["Extraction Audit"]["A2"].value == "70000_Example"
-              assert wb["Extraction Audit"]["Q2"].value == "No"
-              assert wb["Extraction Audit"]["R2"].value == "needs_review"
+              assert wb["Extraction Audit"]["O2"].value == "No"
+              assert wb["Extraction Audit"]["P2"].value == "needs_review"
               assert wb["Needs Review"].max_row >= 2
 
               if team == "scripting":
@@ -351,7 +351,8 @@ jobs:
           assert reviewable_rows[0]["needs_review"] is True
           assert reviewable_rows[0]["performance_eligible"] is True
 
-          # Stage-aware extraction: do not blindly drop first/last stack children.
+          # Approved Frame.io version rule: always ignore first and latest;
+          # only intermediate versions are eligible, regardless of filename text.
           class FakeFrameIO(FrameIOClient):
               def __init__(self, versions, comments_by_id):
                   self._versions = versions
@@ -363,76 +364,78 @@ jobs:
               def comments_for_file(self, account_id, file_id):
                   return self._comments_by_id.get(file_id, [])
 
-          stage_project = {
-              "article_id": "69447",
-              "item_name": "69447_Osei",
-              "science_interpreter": "Balamurugan P",
-              "post_shoot_notes_integrator": "",
+          positional_project = {
+              "article_id": "70148",
+              "item_name": "70148_qiu",
           }
-          stage_resolution = Resolution(
+          positional_resolution = Resolution(
               status="resolved",
               account_id="a",
               project_id="p",
               version_stack_id="stack",
-              asset_name="69447_Osei_082726_P_Web.mp4",
+              asset_name="70148_qiu",
               method="smoke_test",
           )
           fake = FakeFrameIO(
               [
-                  {"id": "r", "name": "69447_Osei_050626_R_Web.mp4", "created_at": "1"},
-                  {"id": "p", "name": "69447_Osei_082726_P_Web.mp4", "created_at": "2"},
+                  {"id": "v1", "name": "70148_qiu_061926_R_Web.mp4", "created_at": "1"},
+                  {"id": "v2", "name": "70148_qiu_072126_P_Web.mp4", "created_at": "2"},
+                  {"id": "v3", "name": "70148_qiu_072926_P2_Web.mp4", "created_at": "3"},
+                  {"id": "v4", "name": "70148_qiu_083126_P3_Web.mp4", "created_at": "4"},
               ],
               {
-                  "r": [{"id": "r1", "text": "Author/SI rough comment", "owner": {"name": "Balamurugan P"}}],
-                  "p": [
-                      {"id": "p1", "text": "Use lowercase 'a'", "owner": {"name": "Shehnaz Lokhandwala"}},
-                      {"id": "p2", "text": "SI follow-up on proof", "owner": {"name": "Balamurugan P"}},
-                  ],
+                  "v1": [{"id": "c-v1", "text": "MUST NOT BE INCLUDED", "owner": {"name": "Reviewer"}}],
+                  "v2": [{"id": "c-v2", "text": "Include v2 comment", "owner": {"name": "Reviewer"}}],
+                  "v3": [{"id": "c-v3", "text": "Include v3 comment", "owner": {"name": "Reviewer"}}],
+                  "v4": [{"id": "c-v4", "text": "MUST NOT BE INCLUDED", "owner": {"name": "Reviewer"}}],
               },
           )
-          stage_bundle = fake.extract_intermediate_comments(stage_project, stage_resolution)
-          assert [row["comment_id"] for row in stage_bundle["comments"]] == ["p1"]
-          assert {row["comment_id"] for row in stage_bundle["excluded_comments"]} == {"r1", "p2"}
-          assert stage_bundle["comments"][0]["review_stage"] == "1st Proof"
-          assert stage_bundle["extraction_audit"]["status"] == "verified"
+          positional_bundle = fake.extract_intermediate_comments(positional_project, positional_resolution)
+          assert [row["comment_id"] for row in positional_bundle["comments"]] == ["c-v2", "c-v3"]
+          assert [row["version_label"] for row in positional_bundle["comments"]] == ["v2", "v3"]
+          assert [row["included_for_qc"] for row in positional_bundle["versions"]] == [False, True, True, False]
+          assert positional_bundle["extraction_audit"]["eligible_versions"] == 2
+          assert positional_bundle["extraction_audit"]["checked_versions"] == 2
+          assert positional_bundle["extraction_audit"]["status"] == "verified"
 
-          # A stack that begins at P2 must not have its first child thrown away.
-          fake_late = FakeFrameIO(
+          # Filenames must never change the positional rule.
+          fake_names = FakeFrameIO(
               [
-                  {"id": "p2", "name": "67081_Ebong_062025_P2_Web.mp4", "created_at": "1"},
-                  {"id": "p3", "name": "67081_Ebong_092926_P3_Web.mp4", "created_at": "2"},
+                  {"id": "a", "name": "looks_like_P2.mp4", "created_at": "1"},
+                  {"id": "b", "name": "anything_at_all.mp4", "created_at": "2"},
+                  {"id": "c", "name": "looks_like_R.mp4", "created_at": "3"},
               ],
               {
-                  "p2": [{"id": "late1", "text": "QC correction on P2", "owner": {"name": "Shehnaz Lokhandwala"}}],
-                  "p3": [],
+                  "a": [{"id": "a1", "text": "first excluded", "owner": {"name": "Reviewer"}}],
+                  "b": [{"id": "b1", "text": "middle included", "owner": {"name": "Reviewer"}}],
+                  "c": [{"id": "c1", "text": "last excluded", "owner": {"name": "Reviewer"}}],
               },
           )
-          late_bundle = fake_late.extract_intermediate_comments(
-              {"article_id": "67081", "item_name": "67081_Ebong", "science_interpreter": "", "post_shoot_notes_integrator": ""},
-              stage_resolution,
+          names_bundle = fake_names.extract_intermediate_comments(
+              {"article_id": "70001", "item_name": "70001_Test"},
+              positional_resolution,
           )
-          assert [row["comment_id"] for row in late_bundle["comments"]] == ["late1"]
-          assert late_bundle["extraction_audit"]["final_version"].endswith("_P3_Web.mp4")
-          assert late_bundle["extraction_audit"]["status"] == "verified"
+          assert [row["comment_id"] for row in names_bundle["comments"]] == ["b1"]
 
-          # Two-version R/P with a checked no-comment proof is a verified zero-error case.
-          fake_zero = FakeFrameIO(
+          # Two-version stacks have no intermediate version and cannot be verified zero-error.
+          fake_two = FakeFrameIO(
               [
-                  {"id": "zr", "name": "70001_Test_R_Web.mp4", "created_at": "1"},
-                  {"id": "zp", "name": "70001_Test_P_Web.mp4", "created_at": "2"},
+                  {"id": "first", "name": "first.mp4", "created_at": "1"},
+                  {"id": "last", "name": "last.mp4", "created_at": "2"},
               ],
-              {"zr": [], "zp": []},
+              {
+                  "first": [{"id": "f1", "text": "excluded first", "owner": {"name": "Reviewer"}}],
+                  "last": [{"id": "l1", "text": "excluded last", "owner": {"name": "Reviewer"}}],
+              },
           )
-          zero_bundle = fake_zero.extract_intermediate_comments(
-              {"article_id": "70001", "item_name": "70001_Test", "science_interpreter": "", "post_shoot_notes_integrator": ""},
-              stage_resolution,
+          two_bundle = fake_two.extract_intermediate_comments(
+              {"article_id": "70002", "item_name": "70002_Test"},
+              positional_resolution,
           )
-          assert zero_bundle["extraction_audit"]["zero_error_verified"] is True
-
-          # Legacy V2+ naming is still QC per the meeting rule; V1 remains pre-QC.
-          assert FrameIOClient.infer_review_stage("70442_Cheng_080726_V5.mp4", 1)["stage_kind"] == "qc_proof"
-          assert FrameIOClient.infer_review_stage("70442_Cheng_091726_V6_Web.mp4", 2)["stage_kind"] == "qc_proof"
-          assert FrameIOClient.infer_review_stage("Example_V1.mp4", 1)["stage_kind"] == "pre_qc"
+          assert two_bundle["comments"] == []
+          assert two_bundle["extraction_audit"]["eligible_versions"] == 0
+          assert two_bundle["extraction_audit"]["status"] == "needs_review"
+          assert two_bundle["extraction_audit"]["zero_error_verified"] is False
 
           # Feedback regressions: VO redo, late scope adjustment, and standalone title.
           vo_source = {"text": "Use VO redo for 3.8:\n\n3.8. Prepare serial dilutions.", "review_stage": "1st Proof"}
