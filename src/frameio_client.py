@@ -399,10 +399,14 @@ class FrameIOClient:
                     "total_versions": 0,
                     "eligible_versions": 0,
                     "checked_versions": 0,
+                    "included_versions": 0,
                     "failed_versions": 0,
                     "first_version": "",
+                    "latest_version": "",
                     "final_version": "",
+                    "latest_version_included": False,
                     "checked_version_names": [],
+                    "included_version_names": [],
                     "failed_version_names": [],
                     "comment_count": 0,
                     "zero_error_verified": False,
@@ -414,36 +418,42 @@ class FrameIOClient:
         annotated_versions: list[dict[str, Any]] = []
         all_comments: list[dict[str, Any]] = []
         checked_version_names: list[str] = []
+        included_version_names: list[str] = []
         failed_version_names: list[str] = []
 
         total_versions = len(versions)
         first_version = self._name(versions[0]) if versions else ""
-        final_version = self._name(versions[-1]) if versions else ""
-        eligible_versions = max(total_versions - 2, 0)
+        latest_version = self._name(versions[-1]) if versions else ""
+        versions_after_v1 = max(total_versions - 1, 0)
+        final_version = ""
+        latest_version_included = False
 
         for index, version in enumerate(versions, start=1):
             version_name = str(version.get("name") or self._name(version) or f"Version {index}")
-            included = 1 < index < total_versions
+            is_first = index == 1
+            is_latest = index == total_versions
 
             row = dict(version)
             row["version_number"] = index
             row["version_label"] = f"v{index}"
-            row["included_for_qc"] = included
-            row["qc_check_status"] = "excluded" if not included else "pending"
+            row["included_for_qc"] = False
+            row["qc_check_status"] = "excluded" if is_first else "pending"
             row["qc_comment_count"] = 0
-            if index == 1:
-                row["qc_check_note"] = "Excluded by approved rule: first Frame.io version (v1)."
-            elif index == total_versions:
-                row["qc_check_note"] = "Excluded by approved rule: latest/final Frame.io version."
+            row["qc_check_note"] = (
+                "Excluded by approved rule: first Frame.io version (v1)."
+                if is_first
+                else ""
+            )
             annotated_versions.append(row)
 
-            if not included:
+            # v1 is always excluded and does not need to be read for QC.
+            if is_first:
                 continue
 
             file_id = str(version.get("id") or "")
             if not file_id:
                 row["qc_check_status"] = "failed"
-                row["qc_check_note"] = "Eligible intermediate Frame.io version had no file id."
+                row["qc_check_note"] = "Frame.io version after v1 had no file id."
                 failed_version_names.append(version_name)
                 continue
 
@@ -465,36 +475,61 @@ class FrameIOClient:
             row["qc_check_status"] = "checked"
             row["qc_comment_count"] = len(flattened)
             checked_version_names.append(version_name)
-            all_comments.extend(flattened)
+
+            # Every non-first intermediate version is in scope. The latest version
+            # is included only when it actually contains comments; a no-comment
+            # latest version is treated as the final/published version.
+            include_for_qc = (not is_latest) or bool(flattened)
+            row["included_for_qc"] = include_for_qc
+
+            if include_for_qc:
+                included_version_names.append(version_name)
+                all_comments.extend(flattened)
+                if is_latest:
+                    latest_version_included = True
+                    row["qc_check_note"] = (
+                        "Latest Frame.io version contains comments and is included in QC by approved rule."
+                    )
+            elif is_latest:
+                final_version = version_name
+                row["qc_check_note"] = (
+                    "Latest Frame.io version was checked, contains no comments, and is excluded as the final/published version."
+                )
 
         checked_versions = len(checked_version_names)
+        included_versions = len(included_version_names)
         failed_versions = len(failed_version_names)
 
         if not versions:
             audit_status = "needs_review"
             audit_note = "No Frame.io versions were returned for the resolved stack."
-        elif eligible_versions == 0:
+        elif versions_after_v1 == 0:
             audit_status = "needs_review"
             audit_note = (
-                "No eligible intermediate Frame.io versions exist after excluding the first and latest versions; "
-                "the article cannot be treated as a verified zero-error project."
+                "Only Frame.io v1 exists. There is no later version available to verify QC comments or a zero-error result."
             )
         elif failed_versions:
             audit_status = "needs_review"
             audit_note = (
-                f"{failed_versions} of {eligible_versions} eligible intermediate version(s) could not be checked."
+                f"{failed_versions} of {versions_after_v1} Frame.io version(s) after v1 could not be checked."
             )
-        elif checked_versions != eligible_versions:
+        elif checked_versions != versions_after_v1:
             audit_status = "needs_review"
             audit_note = (
-                f"Only {checked_versions} of {eligible_versions} eligible intermediate version(s) were verified."
+                f"Only {checked_versions} of {versions_after_v1} Frame.io version(s) after v1 were verified."
             )
         else:
             audit_status = "verified"
-            audit_note = (
-                f"Excluded Frame.io v1 and the latest/final version. "
-                f"All {eligible_versions} intermediate version(s) were checked successfully."
-            )
+            if latest_version_included:
+                audit_note = (
+                    f"Excluded Frame.io v1. Checked all {versions_after_v1} later version(s); "
+                    "the latest version contained comments and was included in QC."
+                )
+            else:
+                audit_note = (
+                    f"Excluded Frame.io v1. Checked all {versions_after_v1} later version(s); "
+                    "the latest version contained no comments and was excluded as the final/published version."
+                )
 
         return {
             "project": project,
@@ -505,17 +540,21 @@ class FrameIOClient:
             "extraction_audit": {
                 "status": audit_status,
                 "total_versions": total_versions,
-                "eligible_versions": eligible_versions,
+                "eligible_versions": versions_after_v1,
                 "checked_versions": checked_versions,
+                "included_versions": included_versions,
                 "failed_versions": failed_versions,
                 "first_version": first_version,
+                "latest_version": latest_version,
                 "final_version": final_version,
+                "latest_version_included": latest_version_included,
                 "checked_version_names": checked_version_names,
+                "included_version_names": included_version_names,
                 "failed_version_names": failed_version_names,
                 "comment_count": len(all_comments),
                 "zero_error_verified": (
                     audit_status == "verified"
-                    and eligible_versions > 0
+                    and versions_after_v1 > 0
                     and len(all_comments) == 0
                 ),
                 "note": audit_note,
