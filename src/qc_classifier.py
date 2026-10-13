@@ -88,21 +88,22 @@ Operational/non-performance categories:
 {operational}
 
 Rules:
-1. Analyze every supplied comment, including replies, but do not count acknowledgements, questions, confirmations, or conversational replies as errors unless they clearly contain a new QC correction.
+1. Analyze every supplied comment, including replies. Do not count acknowledgements, questions, confirmations, or conversational replies as errors unless they clearly contain a new QC correction. A reply that only clarifies or implements the same correction as its parent is the same error thread and must not create a second count.
 2. One comment may contain multiple independent corrections. Split them into separate issue objects when categories differ. If a comment clearly identifies multiple occurrences of the same error type, keep one issue object and set error_count to the explicit or clearly implied number; otherwise use 1.
 3. Use ONLY the category definitions above. Do not broaden or invent category definitions.
-4. Scripting means the underlying script/content/instruction is wrong. Video editing means the approved instruction/content is acceptable but its audiovisual execution is wrong. Scientific/procedural meaning, equations, measurements, terminology, missing procedural detail, or what must be stated belongs in Scientific Accuracy & Completeness. Language & Narration is only grammar, wording, sentence flow, pauses, pronunciation, or clarity where scientific/procedural meaning is unchanged.
-5. A comment that mainly says "Use VO redo", "use the VO redo", or "Insert new VO" is normally operational category VO Redos, not a scripting or video-editor error, unless the comment independently states the underlying script was wrong (for example #scripting, "VO should specify...", "incorrect wording") or identifies a separate video execution error. One comment may therefore produce an operational VO Redo plus a separate video-editing issue.
-6. Late editorial/scope changes such as adding a new title card/reference because content is no longer shown, or changing deliverables without evidence the contributor made the original mistake, are Operational / Editorial / Scope Adjustment rather than a performance error. If you cannot tell whether it was an original contributor error or a late change, use operational and needs_review=true.
-7. Standalone replacement title/text comments can be genuine corrections even when they contain no verb such as "edit" or "change". Use previous_same_version_text, next_same_version_text, and standalone_title_context to avoid silently dropping them.
-8. Hashtags are supporting evidence, not a substitute for analyzing the actual error. If #scripting or #video_editing is explicitly present, treat it as a strong attribution hint because those labels were proposed for team attribution. Other operational tags such as #video or #audio must not by themselves decide who introduced the error.
-9. Use Previous Comments Unaddressed ONLY when repeated_from_prior_version=true. That flag is created by deterministic cross-version comparison. If repeat_language_without_match=true but repeated_from_prior_version=false, classify the actual underlying issue instead and set needs_review=true because the wording references an earlier version without enough matching evidence.
-10. If there is no genuine QC error, return an empty issues array.
-11. If the team or category is ambiguous, choose the most plausible one but set needs_review=true and lower confidence.
-12. Never invent facts outside the comment text and supplied metadata.
-13. Never paraphrase, summarize, rewrite, clean up, shorten, expand, correct, or otherwise alter the reviewer comment. Set error_summary to the exact supplied comment text, character-for-character. The application also enforces this deterministically downstream.
-14. pattern_label must be a short normalized recurring-pattern phrase, reusing the same wording for similar errors across different comments (for example: "Footage pacing", "Audio-video mismatch", "Incorrect highlighting", "On-screen text formatting").
-15. Return exactly one classification object for every supplied record_key, even when its issues array is empty.
+4. Scripting means the underlying script/content/instruction is wrong. Video editing means the approved instruction/content is acceptable but its audiovisual execution is wrong. Scientific/procedural meaning, equations, measurements, terminology, missing procedural detail, or what must be stated belongs in Scientific Accuracy & Completeness. Language & Narration is only grammar, wording, sentence structure, awkward phrasing, redundant narration, unnecessary words, or pronunciation where the underlying meaning is unchanged. A pure request to add/change a pause or narration timing without changing words/content is Audio/Visual, not Scripting.
+5. If a highlight must appear only when the VO names a particular scientific/anatomical concept, treat that scientific correspondence as Scientific Accuracy & Completeness. General graph/region/curve/color highlighting execution remains Video Editing / Result Section.
+6. A comment that mainly says "Use VO redo", "use the VO redo", or "Insert new VO" is normally operational category VO Redos, not a scripting or video-editor error. However, if the same comment also contains independent video instructions (for example specific highlighting, footage, table, crop, delete, blur, or on-screen execution directions), preserve those as separate video-editing issues instead of collapsing the entire comment into VO Redos.
+7. Use Editorial / Scope Adjustment only when the text itself gives strong evidence of a new/late editorial request, author-proof change, source-material update, new section/title-card deliverable, or a title/scope change without an error rationale. Do not infer non-performance merely because a comment says add/edit/remove/replace. If scope-vs-error is ambiguous, set needs_review=true rather than silently finalizing it as non-performance.
+8. Standalone replacement title/text comments can be genuine corrections even when they contain no verb such as "edit" or "change". Use previous_same_version_text, next_same_version_text, and standalone_title_context to avoid silently dropping them.
+9. Hashtags are supporting evidence, not a substitute for analyzing the actual error. If #scripting or #video_editing is explicitly present, treat it as a strong attribution hint because those labels were proposed for team attribution. Other operational tags such as #video or #audio must not by themselves decide who introduced the error.
+10. Use Previous Comments Unaddressed ONLY when repeated_from_prior_version=true. That flag is created by deterministic cross-version comparison. If repeat_language_without_match=true but repeated_from_prior_version=false, classify the actual underlying issue instead and set needs_review=true because the wording references an earlier version without enough matching evidence.
+11. If there is no genuine QC error, return an empty issues array.
+12. If the team or category is ambiguous, choose the most plausible one but set needs_review=true and lower confidence.
+13. Never invent facts outside the comment text and supplied metadata.
+14. Never paraphrase, summarize, rewrite, clean up, shorten, expand, correct, or otherwise alter the reviewer comment. Set error_summary to the exact supplied comment text, character-for-character. The application also enforces this deterministically downstream.
+15. pattern_label must be a short normalized recurring-pattern phrase, reusing the same wording for similar errors across different comments (for example: "Footage pacing", "Audio-video mismatch", "Incorrect highlighting", "On-screen text formatting").
+16. Return exactly one classification object for every supplied record_key, even when its issues array is empty.
 """
 
 
@@ -133,6 +134,153 @@ def _explicit_video_defect_signal(text: str) -> bool:
     ))
 
 
+def _explicit_video_instruction_signal(text: str) -> bool:
+    low = str(text or "").casefold()
+    return bool(re.search(
+        r"\b(highlight|highlighting|show|display|crop|blur|remove|delete|replace|"
+        r"footage|table|figure|on[- ]?screen|title card|freeze frame)\b",
+        low,
+    ))
+
+
+def _pure_narration_pause_hint(text: str) -> bool:
+    low = str(text or "").casefold()
+    if not re.search(r"\bpause\b|\bpauses\b", low):
+        return False
+    content_change = re.search(
+        r"\b(replace|revise|reword|rewrite|change (?:the )?(?:wording|vo|narration|script)|"
+        r"should say|say instead|incorrect wording|wrong wording|full form|specify|missing (?:word|phrase|content))\b",
+        low,
+    )
+    return not bool(content_change)
+
+
+def _scientific_highlight_timing_hint(text: str) -> bool:
+    low = str(text or "").casefold()
+    return bool(
+        "highlight" in low
+        and re.search(
+            r"(?:highlight[^.\n]{0,120}\b(?:only )?(?:when|as)\b[^.\n]{0,80}\bvo\b|"
+            r"\bvo\b[^.\n]{0,80}\b(?:says|mentions)\b[^.\n]{0,120}\bhighlight)",
+            low,
+        )
+    )
+
+
+def _mixed_vo_highlight_count(text: str) -> int:
+    if not _operational_vo_redo_hint(text):
+        return 0
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    numbered = [
+        line for line in lines
+        if re.search(r"\bhighlight(?:ing)?\b", line, re.I)
+        and re.search(r"\b(?:for\s+)?\d+(?:\.\d+)+\b", line)
+    ]
+    if numbered:
+        return len(numbered)
+    return 1 if re.search(r"\bhighlight(?:ing)?\b", str(text or ""), re.I) else 0
+
+
+def _strong_editorial_scope_signal(text: str) -> bool:
+    low = str(text or "").casefold()
+    error_rationale = re.search(
+        r"\b(incorrect|wrong|misspelled|spelling|typo|abbreviation|first use|inconsistent|"
+        r"consistency|capitalize|capitalise|lowercase|uppercase|missing|required|should have)\b",
+        low,
+    )
+    if "author proof comment" in low:
+        return True
+    if "not shown" in low and "title" in low:
+        return True
+    if "see text protocol" in low and ("add on-screen text" in low or "add onscreen text" in low):
+        return True
+    if re.search(r"\b(insert|add)\b[^.\n]{0,40}\bsection title(?: card)?\b", low):
+        return True
+    if re.search(r"\b(edit|change|replace)\s+(?:the\s+)?title\s+to\b", low) and not error_rationale:
+        return True
+    if re.search(r"\b(use|replace with)\b[^.\n]{0,40}\b(updated|new|attached)\b[^.\n]{0,40}\b(figure|file|footage|image)\b", low):
+        return True
+    if re.search(r"\bif (?:yes|possible|available)\b", low):
+        return True
+    return False
+
+
+_THREAD_STOPWORDS = {
+    "the", "a", "an", "and", "or", "to", "of", "for", "in", "on", "with", "as",
+    "is", "are", "be", "been", "it", "this", "that", "we", "could", "should",
+    "would", "when", "using", "use", "from", "by", "please", "make", "following",
+}
+
+
+def _thread_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(text or "").casefold())
+        if len(token) > 2 and token not in _THREAD_STOPWORDS
+    }
+
+
+def _same_thread_issue(parent_text: str, reply_text: str) -> bool:
+    parent_tokens = _thread_tokens(parent_text)
+    reply_tokens = _thread_tokens(reply_text)
+    if not parent_tokens or not reply_tokens:
+        return False
+    overlap = len(parent_tokens & reply_tokens) / min(len(parent_tokens), len(reply_tokens))
+    return overlap >= 0.45
+
+
+def _deduplicate_reply_issues(
+    comments: list[dict[str, Any]],
+    classifications: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    source_by_id = {
+        str(comment.get("comment_id") or ""): comment
+        for comment in comments
+        if comment.get("comment_id")
+    }
+    result_by_id = {
+        str(row.get("comment_id") or ""): row
+        for row in classifications
+        if row.get("comment_id")
+    }
+
+    for comment_id, source in source_by_id.items():
+        parent_id = str(source.get("parent_comment_id") or "")
+        if not source.get("is_reply") or not parent_id:
+            continue
+
+        reply_result = result_by_id.get(comment_id)
+        parent_result = result_by_id.get(parent_id)
+        parent_source = source_by_id.get(parent_id)
+        if not reply_result or not parent_result or not parent_source:
+            continue
+        if reply_result.get("_classification_error") or parent_result.get("_classification_error"):
+            continue
+        if not _same_thread_issue(parent_source.get("text", ""), source.get("text", "")):
+            continue
+
+        parent_pairs = {
+            (str(issue.get("team") or ""), str(issue.get("category") or ""))
+            for issue in (parent_result.get("issues") or [])
+            if int(issue.get("error_count") or 0) > 0
+        }
+        kept = []
+        removed = 0
+        for issue in reply_result.get("issues") or []:
+            pair = (str(issue.get("team") or ""), str(issue.get("category") or ""))
+            if pair in parent_pairs and int(issue.get("error_count") or 0) > 0:
+                removed += 1
+                continue
+            kept.append(issue)
+
+        if removed:
+            reply_result["issues"] = kept
+            reply_result["_deduplicated_to_parent"] = parent_id
+            reply_result["_deduplicated_issue_count"] = removed
+
+    return classifications
+
+
 def _scientific_content_correction_hint(source: dict[str, Any]) -> bool:
     low = str(source.get("text") or "").casefold()
     if "vo should specify" in low or "vo does not specify" in low or "specify what is being" in low:
@@ -149,16 +297,9 @@ def _scientific_content_correction_hint(source: dict[str, Any]) -> bool:
 
 def _editorial_scope_adjustment_hint(source: dict[str, Any]) -> bool:
     text = str(source.get("text") or "")
-    low = text.casefold()
-    if "#scripting" in low:
+    if "#scripting" in text.casefold():
         return False
-
-    if "not shown" in low and "title" in low:
-        return True
-    if "see text protocol" in low and ("add on-screen text" in low or "add onscreen text" in low):
-        return True
-
-    return False
+    return _strong_editorial_scope_signal(text)
 
 
 def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -167,6 +308,8 @@ def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]
 
     pure_vo_redo = _operational_vo_redo_hint(text)
     explicit_video_defect = _explicit_video_defect_signal(text)
+    explicit_video_instruction = _explicit_video_instruction_signal(text)
+    mixed_highlight_count = _mixed_vo_highlight_count(text)
 
     for raw in issues or []:
         issue = dict(raw)
@@ -175,13 +318,41 @@ def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]
             pure_vo_redo
             and issue.get("team") in {"scripting", "video_editing"}
             and not explicit_video_defect
+            and not explicit_video_instruction
         ):
             issue["team"] = "operational"
             issue["category"] = "VO Redos"
             issue["needs_review"] = False
-            issue["reason"] = "VO redo request is treated as an operational change unless a separate contributor defect is explicitly stated."
+            issue["reason"] = "VO redo request is treated as an operational change unless a separate contributor defect or video execution instruction is explicitly stated."
             issue["pattern_label"] = "VO Redo"
         normalized.append(issue)
+
+    # Pure narration pause/timing requests do not belong to writer performance.
+    if _pure_narration_pause_hint(text):
+        normalized = [{
+            "team": "video_editing",
+            "category": "Audio/Visual",
+            "error_summary": text,
+            "error_count": 1,
+            "confidence": 0.97,
+            "needs_review": False,
+            "reason": "Pure narration pause/timing correction with no wording or content change.",
+            "pattern_label": "Narration timing",
+        }]
+
+    # When the timing of a highlight is explicitly tied to the scientific phrase
+    # being spoken, the correction is about scientific correspondence.
+    if _scientific_highlight_timing_hint(text):
+        normalized = [{
+            "team": "scripting",
+            "category": "Scientific Accuracy & Completeness",
+            "error_summary": text,
+            "error_count": 1,
+            "confidence": 0.97,
+            "needs_review": False,
+            "reason": "Highlight timing is explicitly tied to the scientific/anatomical concept named in the VO.",
+            "pattern_label": "Scientific visual correspondence",
+        }]
 
     if pure_vo_redo:
         retained = [
@@ -192,8 +363,12 @@ def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]
                 and row.get("category") != "VO Redos"
             )
             or (
-                explicit_video_defect
+                (explicit_video_defect or explicit_video_instruction)
                 and row.get("team") == "video_editing"
+            )
+            or (
+                row.get("team") == "scripting"
+                and not _operational_vo_redo_hint(text)
             )
         ]
         retained.append({
@@ -206,6 +381,25 @@ def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]
             "reason": "Deterministic VO redo operational rule.",
             "pattern_label": "VO Redo",
         })
+
+        if mixed_highlight_count:
+            retained = [
+                row for row in retained
+                if not (
+                    row.get("team") == "video_editing"
+                    and row.get("category") == "Result Section"
+                )
+            ]
+            retained.append({
+                "team": "video_editing",
+                "category": "Result Section",
+                "error_summary": text,
+                "error_count": mixed_highlight_count,
+                "confidence": 0.98,
+                "needs_review": False,
+                "reason": "VO redo comment also contains independent highlight/no-highlight execution instructions.",
+                "pattern_label": "Highlighting instructions",
+            })
         normalized = retained
 
     if _editorial_scope_adjustment_hint(source):
@@ -220,10 +414,24 @@ def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]
             "error_count": 1,
             "confidence": 0.95,
             "needs_review": False,
-            "reason": "Late editorial/scope change rule; not charged to scripting performance.",
+            "reason": "Strong textual evidence of a late/new editorial or scope adjustment; not charged to contributor performance.",
             "pattern_label": "Editorial scope adjustment",
         })
         normalized = retained
+
+    # Model-proposed scope exclusions without strong evidence are not silently
+    # finalized as non-performance. They remain visible for manual review.
+    for row in normalized:
+        if (
+            row.get("team") == "operational"
+            and row.get("category") == "Editorial / Scope Adjustment"
+            and not _strong_editorial_scope_signal(text)
+        ):
+            row["needs_review"] = True
+            row["confidence"] = min(float(row.get("confidence") or 0.75), 0.75)
+            row["reason"] = (
+                "Ambiguous editorial/scope-versus-contributor-error distinction; manual review required before final non-performance treatment."
+            )
 
     if _scientific_content_correction_hint(source):
         retained_video = [
@@ -258,7 +466,6 @@ def _normalize_model_issues(source: dict[str, Any], issues: list[dict[str, Any]]
         })
 
     return normalized
-
 
 def _classify_batch(
     api_key: str,
@@ -458,12 +665,14 @@ def classify_comments(
             ),
         }
 
-    # Preserve original Frame.io comment order for deterministic downstream reports.
-    return [
+    # Preserve original Frame.io comment order for deterministic downstream reports,
+    # then consolidate reply-only continuations of the same parent issue.
+    ordered = [
         resolved[source_key(row)]
         for row in comments
         if source_key(row) in resolved
     ]
+    return _deduplicate_reply_issues(comments, ordered)
 
 
 def attach_classifications(projects: list[dict[str, Any]], classifications: list[dict[str, Any]]) -> list[dict[str, Any]]:
