@@ -467,7 +467,7 @@ jobs:
           assert pause_rows[0]["category"] == "Audio/Visual"
 
           equation_parent = 'Instead of this onscreen text, we could modify the VO to say "Calculate the colony-forming units per milliliter using the Equation shown" and show the equation on a plain background'
-          equation_reply = 'It seems like "using the following equation gets cut off from the VO". Use the complete VO redo and when VO says "using the following equation", show the equation on screen on a plain background.'
+          equation_reply = 'It seems like "using the following equation gets cut off from the VO". Make the following edits: Use the complete VO redo for 3.9 ordered previously. Calculate the colony-forming units per milliliter using the following equation. When VO says "using the following equation", show the equation on screen on a plain background.'
           equation = _normalize_model_issues(
               {"text": equation_parent},
               [
