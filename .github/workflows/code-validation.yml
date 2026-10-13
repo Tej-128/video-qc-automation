@@ -2,7 +2,7 @@ name: Code Validation
 
 on:
   push:
-    branches: [main]
+    branches: [main, qc-feedback-final-v210]
   workflow_dispatch:
 
 permissions:
@@ -50,7 +50,7 @@ jobs:
           from src.pipeline import _annotate_neighbor_context, _annotate_repeat_context
           from src.qa import audit_run
           from src.report_generator import build_report
-          from src.qc_classifier import _normalize_model_issues, attach_classifications
+          from src.qc_classifier import _deduplicate_reply_issues, _normalize_model_issues, attach_classifications
           from src.review_overrides import parse_review_overrides, apply_review_overrides
 
           projects = [
@@ -219,8 +219,8 @@ jobs:
               assert wb["_Validation Lists"].sheet_state == "hidden"
               assert wb["Extraction Audit"].max_row == 3
               assert wb["Extraction Audit"]["A2"].value == "70000_Example"
-              assert wb["Extraction Audit"]["O2"].value == "No"
-              assert wb["Extraction Audit"]["P2"].value == "needs_review"
+              assert wb["Extraction Audit"]["S2"].value == "No"
+              assert wb["Extraction Audit"]["T2"].value == "needs_review"
               assert wb["Needs Review"].max_row >= 2
 
               if team == "scripting":
@@ -351,8 +351,10 @@ jobs:
           assert reviewable_rows[0]["needs_review"] is True
           assert reviewable_rows[0]["performance_eligible"] is True
 
-          # Approved Frame.io version rule: always ignore first and latest;
-          # only intermediate versions are eligible, regardless of filename text.
+          # Approved Frame.io version rule:
+          # v1 is always excluded. Every version after v1 is checked.
+          # The latest version is included when it contains comments and is
+          # excluded as final/published only when it has no comments.
           class FakeFrameIO(FrameIOClient):
               def __init__(self, versions, comments_by_id):
                   self._versions = versions
@@ -364,10 +366,7 @@ jobs:
               def comments_for_file(self, account_id, file_id):
                   return self._comments_by_id.get(file_id, [])
 
-          positional_project = {
-              "article_id": "70148",
-              "item_name": "70148_qiu",
-          }
+          positional_project = {"article_id": "70148", "item_name": "70148_qiu"}
           positional_resolution = Resolution(
               status="resolved",
               account_id="a",
@@ -376,106 +375,101 @@ jobs:
               asset_name="70148_qiu",
               method="smoke_test",
           )
-          fake = FakeFrameIO(
+
+          latest_has_comments = FakeFrameIO(
               [
-                  {"id": "v1", "name": "70148_qiu_061926_R_Web.mp4", "created_at": "1"},
-                  {"id": "v2", "name": "70148_qiu_072126_P_Web.mp4", "created_at": "2"},
-                  {"id": "v3", "name": "70148_qiu_072926_P2_Web.mp4", "created_at": "3"},
-                  {"id": "v4", "name": "70148_qiu_083126_P3_Web.mp4", "created_at": "4"},
+                  {"id": "v1", "name": "any_first_name.mp4", "created_at": "1"},
+                  {"id": "v2", "name": "anything_middle.mp4", "created_at": "2"},
+                  {"id": "v3", "name": "anything_middle_2.mp4", "created_at": "3"},
+                  {"id": "v4", "name": "anything_latest.mp4", "created_at": "4"},
               ],
               {
                   "v1": [{"id": "c-v1", "text": "MUST NOT BE INCLUDED", "owner": {"name": "Reviewer"}}],
                   "v2": [{"id": "c-v2", "text": "Include v2 comment", "owner": {"name": "Reviewer"}}],
                   "v3": [{"id": "c-v3", "text": "Include v3 comment", "owner": {"name": "Reviewer"}}],
-                  "v4": [{"id": "c-v4", "text": "MUST NOT BE INCLUDED", "owner": {"name": "Reviewer"}}],
+                  "v4": [{"id": "c-v4", "text": "Include latest comment", "owner": {"name": "Reviewer"}}],
               },
           )
-          positional_bundle = fake.extract_intermediate_comments(positional_project, positional_resolution)
-          assert [row["comment_id"] for row in positional_bundle["comments"]] == ["c-v2", "c-v3"]
-          assert [row["version_label"] for row in positional_bundle["comments"]] == ["v2", "v3"]
-          assert [row["included_for_qc"] for row in positional_bundle["versions"]] == [False, True, True, False]
-          assert positional_bundle["extraction_audit"]["eligible_versions"] == 2
-          assert positional_bundle["extraction_audit"]["checked_versions"] == 2
-          assert positional_bundle["extraction_audit"]["status"] == "verified"
+          latest_bundle = latest_has_comments.extract_intermediate_comments(
+              positional_project, positional_resolution
+          )
+          assert [row["comment_id"] for row in latest_bundle["comments"]] == ["c-v2", "c-v3", "c-v4"]
+          assert [row["included_for_qc"] for row in latest_bundle["versions"]] == [False, True, True, True]
+          assert latest_bundle["extraction_audit"]["latest_version_included"] is True
+          assert latest_bundle["extraction_audit"]["status"] == "verified"
 
-          # Filenames must never change the positional rule.
-          fake_names = FakeFrameIO(
+          latest_no_comments = FakeFrameIO(
               [
-                  {"id": "a", "name": "looks_like_P2.mp4", "created_at": "1"},
-                  {"id": "b", "name": "anything_at_all.mp4", "created_at": "2"},
-                  {"id": "c", "name": "looks_like_R.mp4", "created_at": "3"},
+                  {"id": "v1", "name": "looks_like_P2.mp4", "created_at": "1"},
+                  {"id": "v2", "name": "anything_at_all.mp4", "created_at": "2"},
+                  {"id": "v3", "name": "looks_like_R.mp4", "created_at": "3"},
               ],
               {
-                  "a": [{"id": "a1", "text": "first excluded", "owner": {"name": "Reviewer"}}],
-                  "b": [{"id": "b1", "text": "middle included", "owner": {"name": "Reviewer"}}],
-                  "c": [{"id": "c1", "text": "last excluded", "owner": {"name": "Reviewer"}}],
+                  "v1": [{"id": "a1", "text": "first excluded", "owner": {"name": "Reviewer"}}],
+                  "v2": [{"id": "b1", "text": "middle included", "owner": {"name": "Reviewer"}}],
+                  "v3": [],
               },
           )
-          names_bundle = fake_names.extract_intermediate_comments(
+          no_comment_bundle = latest_no_comments.extract_intermediate_comments(
               {"article_id": "70001", "item_name": "70001_Test"},
               positional_resolution,
           )
-          assert [row["comment_id"] for row in names_bundle["comments"]] == ["b1"]
+          assert [row["comment_id"] for row in no_comment_bundle["comments"]] == ["b1"]
+          assert [row["included_for_qc"] for row in no_comment_bundle["versions"]] == [False, True, False]
+          assert no_comment_bundle["extraction_audit"]["latest_version_included"] is False
+          assert no_comment_bundle["extraction_audit"]["final_version"] == "looks_like_R.mp4"
 
-          # Two-version stacks have no intermediate version and cannot be verified zero-error.
-          fake_two = FakeFrameIO(
+          # Two-version stack: the second/latest version is included if it has comments.
+          two_with_comments = FakeFrameIO(
               [
                   {"id": "first", "name": "first.mp4", "created_at": "1"},
                   {"id": "last", "name": "last.mp4", "created_at": "2"},
               ],
               {
                   "first": [{"id": "f1", "text": "excluded first", "owner": {"name": "Reviewer"}}],
-                  "last": [{"id": "l1", "text": "excluded last", "owner": {"name": "Reviewer"}}],
+                  "last": [{"id": "l1", "text": "latest QC correction", "owner": {"name": "Reviewer"}}],
               },
           )
-          two_bundle = fake_two.extract_intermediate_comments(
+          two_comment_bundle = two_with_comments.extract_intermediate_comments(
               {"article_id": "70002", "item_name": "70002_Test"},
               positional_resolution,
           )
-          assert two_bundle["comments"] == []
-          assert two_bundle["extraction_audit"]["eligible_versions"] == 0
-          assert two_bundle["extraction_audit"]["status"] == "needs_review"
-          assert two_bundle["extraction_audit"]["zero_error_verified"] is False
+          assert [row["comment_id"] for row in two_comment_bundle["comments"]] == ["l1"]
+          assert [row["included_for_qc"] for row in two_comment_bundle["versions"]] == [False, True]
+          assert two_comment_bundle["extraction_audit"]["status"] == "verified"
 
-          # Feedback regressions: VO redo, late scope adjustment, and standalone title.
-          vo_source = {"text": "Use VO redo for 3.8:\n\n3.8. Prepare serial dilutions.", "review_stage": "1st Proof"}
-          vo_rows = _normalize_model_issues(
-              vo_source,
+          # Two-version stack with a no-comment latest version is a verified zero.
+          two_without_comments = FakeFrameIO(
+              [
+                  {"id": "first", "name": "first.mp4", "created_at": "1"},
+                  {"id": "last", "name": "last.mp4", "created_at": "2"},
+              ],
+              {"first": [], "last": []},
+          )
+          two_zero_bundle = two_without_comments.extract_intermediate_comments(
+              {"article_id": "70003", "item_name": "70003_Test"},
+              positional_resolution,
+          )
+          assert two_zero_bundle["comments"] == []
+          assert [row["included_for_qc"] for row in two_zero_bundle["versions"]] == [False, False]
+          assert two_zero_bundle["extraction_audit"]["status"] == "verified"
+          assert two_zero_bundle["extraction_audit"]["zero_error_verified"] is True
+
+          # Feedback regressions: generalized rules, no article-specific production exceptions.
+          pause_rows = _normalize_model_issues(
+              {
+                  "text": 'After the VO completes saying "...years" a pause is needed before beginning the next sentence. Currently, it is continuous.',
+              },
               [{"team": "scripting", "category": "Language & Narration", "error_summary": "x", "error_count": 1, "confidence": 0.9, "needs_review": False, "reason": "x", "pattern_label": "x"}],
           )
-          assert any(row["team"] == "operational" and row["category"] == "VO Redos" for row in vo_rows)
-          assert not any(row["team"] == "scripting" for row in vo_rows)
+          assert len(pause_rows) == 1
+          assert pause_rows[0]["team"] == "video_editing"
+          assert pause_rows[0]["category"] == "Audio/Visual"
 
-          scripted_vo = _normalize_model_issues(
-              {"text": "VO should specify what is being labeled. Use VO redo for 4.8. #scripting", "review_stage": "1st Proof"},
-              [{"team": "scripting", "category": "Scientific Accuracy & Completeness", "error_summary": "x", "error_count": 1, "confidence": 0.95, "needs_review": False, "reason": "x", "pattern_label": "x"}],
-          )
-          assert scripted_vo[0]["team"] == "scripting"
-
-          editorial = _normalize_model_issues(
-              {"text": "Since flow cytometry analysis is not shown, edit the title to:\n\nElectroporation", "review_stage": "1st Proof"},
-              [{"team": "scripting", "category": "Titles & On-screen Text", "error_summary": "x", "error_count": 1, "confidence": 0.95, "needs_review": False, "reason": "x", "pattern_label": "x"}],
-          )
-          assert editorial[0]["team"] == "operational"
-          assert editorial[0]["category"] == "Editorial / Scope Adjustment"
-
-          standalone = _normalize_model_issues(
-              {
-                  "text": "Characterization of BMECs Using Immunofluorescence",
-                  "review_stage": "1st Proof",
-                  "standalone_title_context": True,
-              },
-              [],
-          )
-          assert standalone[0]["team"] == "scripting"
-          assert standalone[0]["category"] == "Titles & On-screen Text"
-
-          # Swati comparison regressions: equation/content completeness and final concentration.
+          equation_parent = 'Instead of this onscreen text, we could modify the VO to say "Calculate the colony-forming units per milliliter using the Equation shown" and show the equation on a plain background'
+          equation_reply = 'It seems like "using the following equation gets cut off from the VO". Use the complete VO redo and when VO says "using the following equation", show the equation on screen on a plain background.'
           equation = _normalize_model_issues(
-              {
-                  "text": 'Instead of this onscreen text, we could modify the VO to say "Calculate the colony-forming units per milliliter using the Equation shown" and show the equation on a plain background',
-                  "review_stage": "1st Proof",
-              },
+              {"text": equation_parent},
               [
                   {"team": "scripting", "category": "Language & Narration", "error_summary": "x", "error_count": 1, "confidence": 0.91, "needs_review": False, "reason": "x", "pattern_label": "x"},
                   {"team": "video_editing", "category": "On-Screen Text", "error_summary": "x", "error_count": 1, "confidence": 0.85, "needs_review": False, "reason": "x", "pattern_label": "x"},
@@ -486,10 +480,67 @@ jobs:
           assert equation[0]["category"] == "Scientific Accuracy & Completeness"
           assert equation[0]["error_count"] == 1
 
+          reply_classifications = [
+              {"comment_id": "parent", "issues": equation},
+              {"comment_id": "reply", "issues": _normalize_model_issues(
+                  {"text": equation_reply},
+                  [{"team": "scripting", "category": "Scientific Accuracy & Completeness", "error_summary": "x", "error_count": 1, "confidence": 0.9, "needs_review": False, "reason": "x", "pattern_label": "x"}],
+              )},
+          ]
+          deduped = _deduplicate_reply_issues(
+              [
+                  {"comment_id": "parent", "parent_comment_id": "", "is_reply": False, "text": equation_parent},
+                  {"comment_id": "reply", "parent_comment_id": "parent", "is_reply": True, "text": equation_reply},
+              ],
+              reply_classifications,
+          )
+          assert len(deduped[0]["issues"]) == 1
+          assert deduped[1]["issues"] == []
+          assert deduped[1]["_deduplicated_to_parent"] == "parent"
+
+          highlight_timing = _normalize_model_issues(
+              {
+                  "text": 'This highlight should appear only when the VO says, "and contralateral testes".',
+              },
+              [{"team": "video_editing", "category": "Result Section", "error_summary": "x", "error_count": 1, "confidence": 0.9, "needs_review": False, "reason": "x", "pattern_label": "x"}],
+          )
+          assert len(highlight_timing) == 1
+          assert highlight_timing[0]["team"] == "scripting"
+          assert highlight_timing[0]["category"] == "Scientific Accuracy & Completeness"
+
+          mixed_vo = _normalize_model_issues(
+              {
+                  "text": """Use the VO redo for step 3.1 for revised text:
+For 3.1.1, use the Table and no highlighting.
+For 3.1.2, highlight the time from onset row
+For 3.1.3, highlight the Age row
+For 3.1.4, highlight the proportion of sessions completed
+For 3.1.5, highlight the total time on task achieved row
+For 3.1.6, highlight the last row""",
+              },
+              [{"team": "video_editing", "category": "Result Section", "error_summary": "x", "error_count": 6, "confidence": 0.9, "needs_review": False, "reason": "x", "pattern_label": "x"}],
+          )
+          assert any(row["team"] == "operational" and row["category"] == "VO Redos" and row["error_count"] == 1 for row in mixed_vo)
+          assert any(row["team"] == "video_editing" and row["category"] == "Result Section" and row["error_count"] == 6 for row in mixed_vo)
+
+          ambiguous_scope = _normalize_model_issues(
+              {"text": "Please add a citation for this figure."},
+              [{"team": "operational", "category": "Editorial / Scope Adjustment", "error_summary": "x", "error_count": 1, "confidence": 0.9, "needs_review": False, "reason": "x", "pattern_label": "x"}],
+          )
+          assert ambiguous_scope[0]["team"] == "operational"
+          assert ambiguous_scope[0]["needs_review"] is True
+
+          strong_scope = _normalize_model_issues(
+              {"text": "Insert section title card: Postoperative Monitoring"},
+              [{"team": "scripting", "category": "Titles & On-screen Text", "error_summary": "x", "error_count": 1, "confidence": 0.9, "needs_review": False, "reason": "x", "pattern_label": "x"}],
+          )
+          assert strong_scope[0]["team"] == "operational"
+          assert strong_scope[0]["category"] == "Editorial / Scope Adjustment"
+          assert strong_scope[0]["needs_review"] is False
+
           concentration = _normalize_model_issues(
               {
                   "text": "Add onscreen text:\n\nFinal concentration:\nLPS: 1 µg/mL\nBAI: 100 µM",
-                  "review_stage": "1st Proof",
               },
               [{"team": "video_editing", "category": "On-Screen Text", "error_summary": "x", "error_count": 1, "confidence": 0.88, "needs_review": False, "reason": "x", "pattern_label": "x"}],
           )
@@ -500,33 +551,28 @@ jobs:
           specify = _normalize_model_issues(
               {
                   "text": "VO should specify what is being labeled.\n\nUse VO redo for 4.8.\n\n#scripting",
-                  "review_stage": "1st Proof",
               },
               [{"team": "scripting", "category": "Language & Narration", "error_summary": "x", "error_count": 1, "confidence": 0.9, "needs_review": False, "reason": "x", "pattern_label": "x"}],
           )
           assert specify[0]["team"] == "scripting"
           assert specify[0]["category"] == "Scientific Accuracy & Completeness"
 
-          # A pure VO redo must not become an editor penalty merely because the model guessed video editing.
           vo_video_guess = _normalize_model_issues(
-              {"text": "Use the VO redo for step 2.7 for revised narration.", "review_stage": "2nd Proof"},
+              {"text": "Use the VO redo for step 2.7 for revised narration."},
               [{"team": "video_editing", "category": "Audio/Visual", "error_summary": "x", "error_count": 1, "confidence": 0.8, "needs_review": False, "reason": "x", "pattern_label": "x"}],
           )
           assert len(vo_video_guess) == 1
           assert vo_video_guess[0]["team"] == "operational"
           assert vo_video_guess[0]["category"] == "VO Redos"
 
-          vo_multi_guess = _normalize_model_issues(
-              {"text": "Use VO redo for step 3.1 for revised narration.", "review_stage": "2nd Proof"},
-              [
-                  {"team": "scripting", "category": "Language & Narration", "error_summary": "x", "error_count": 1, "confidence": 0.8, "needs_review": False, "reason": "x", "pattern_label": "x"},
-                  {"team": "video_editing", "category": "Audio/Visual", "error_summary": "x", "error_count": 1, "confidence": 0.8, "needs_review": False, "reason": "x", "pattern_label": "x"},
-              ],
-          )
-          assert len(vo_multi_guess) == 1
-          assert vo_multi_guess[0]["team"] == "operational"
-          assert vo_multi_guess[0]["category"] == "VO Redos"
-          assert vo_multi_guess[0]["error_count"] == 1
+          # Scope reconciliation must report the exact Video Needs Review row count.
+          video_wb = load_workbook(BytesIO(reports["video_editing"]), data_only=False)
+          scope_ws = video_wb["Scope Reconciliation"]
+          scope_counts = {
+              str(scope_ws.cell(r, 1).value): int(scope_ws.cell(r, 2).value or 0)
+              for r in range(2, scope_ws.max_row + 1)
+          }
+          assert scope_counts["Review items"] == video_wb["Needs Review"].max_row - 1
 
           print("QC smoke tests passed.")
           PY
