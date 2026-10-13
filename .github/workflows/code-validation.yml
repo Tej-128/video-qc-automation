@@ -2,7 +2,7 @@ name: Code Validation
 
 on:
   push:
-    branches: [main, qc-feedback-final-v210]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
