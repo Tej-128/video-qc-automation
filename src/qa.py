@@ -254,9 +254,10 @@ def audit_workbook(
     if "Excluded Version Policy" in wb.sheetnames:
         excluded = wb["Excluded Version Policy"]
         expected_excluded_versions = sum(
-            min(2, len(bundle.get("versions") or []))
+            1
             for bundle in bundles
-            if bundle.get("versions")
+            for version in (bundle.get("versions") or [])
+            if not version.get("included_for_qc")
         )
         checks["excluded_version_policy_rows"] = excluded.max_row - 1 == expected_excluded_versions
     else:
@@ -373,12 +374,24 @@ def audit_run(
         audit = bundle.get("extraction_audit") or {}
         bundle_comments = bundle.get("comments") or []
         if not bundle_comments and audit.get("zero_error_verified"):
-            if audit.get("status") != "verified" or int(audit.get("eligible_versions") or 0) <= 0:
+            if (
+                audit.get("status") != "verified"
+                or int(audit.get("eligible_versions") or 0) <= 0
+                or int(audit.get("checked_versions") or 0) != int(audit.get("eligible_versions") or 0)
+            ):
                 zero_error_policy_ok = False
 
         versions = bundle.get("versions") or []
         for index, version in enumerate(versions):
-            expected = 0 < index < len(versions) - 1
+            if index == 0:
+                expected = False
+            elif index < len(versions) - 1:
+                expected = True
+            else:
+                expected = (
+                    version.get("qc_check_status") == "checked"
+                    and int(version.get("qc_comment_count") or 0) > 0
+                )
             if bool(version.get("included_for_qc")) != expected:
                 version_exclusion_ok = False
                 break
@@ -388,8 +401,6 @@ def audit_run(
             for comment in bundle.get("comments") or []
         }
         if 1 in included_versions:
-            version_exclusion_ok = False
-        if versions and len(versions) in included_versions:
             version_exclusion_ok = False
 
     unverified_article_ids = {
@@ -525,7 +536,7 @@ def audit_run(
         )
     if len(extraction_verified) != len(projects):
         notes.append(
-            f"{len(projects) - len(extraction_verified)} project(s) do not have fully verified intermediate-version extraction and are excluded from performance denominators."
+            f"{len(projects) - len(extraction_verified)} project(s) do not have fully verified Frame.io extraction under the current v1/latest-comment rule and are excluded from performance denominators."
         )
 
     commenter_score = float(data_checks["commenter_identity_coverage"])
