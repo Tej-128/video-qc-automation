@@ -1,2 +1,2 @@
-BUILD_VERSION = "QC-V2.9-2026-10-12"
-BUILD_LABEL = "approved Frame.io first-last exclusion candidate"
+BUILD_VERSION = "QC-V2.10-2026-10-13"
+BUILD_LABEL = "reviewer-feedback reconciled shareable candidate"
