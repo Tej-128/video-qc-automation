@@ -320,7 +320,7 @@ if result:
     st.caption(
         f"Review queue: {metrics.get('needs_review', 0)} item(s) across "
         f"{metrics.get('review_projects', 0)} project(s). Multiple review items can belong to the same project. "
-        f"Frame.io v1 and the latest/final version are excluded by rule; only intermediate versions are analyzed. "
+        f"Frame.io v1 is always excluded; every later version is checked, and the latest version is included when it contains comments. "
         f"{metrics.get('vo_redo_count', 0)} VO redo item(s) are tracked separately from editor performance."
     )
     if metrics.get("unassigned_review_error_count", 0):
