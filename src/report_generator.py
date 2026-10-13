@@ -636,23 +636,27 @@ def _analysis_sheet(wb, projects, bundles, error_rows, team):
         ("Articles excluded from contributor denominator", len(projects) - len(contributor_eligible_ids)),
         (
             "Frame.io version rule",
-            "The first Frame.io version (v1) and the latest/final Frame.io version are always excluded. Only the versions between them are checked for QC comments. Filename text such as R, P, P2 or P3 is not used to decide inclusion.",
+            "Frame.io v1 is always excluded. Every version after v1 is checked. The latest version is included when it contains comments; it is excluded as the final/published version only when it has no comments. Filename text such as R, P, P2 or P3 is never used to decide inclusion.",
         ),
         (
             "Performance eligibility",
-            "Team-level trends require verified extraction across every eligible intermediate Frame.io version. Individual contributor performance additionally requires an unambiguous contributor.",
+            "Team-level trends require verified extraction across every Frame.io version after v1 required by the current rule. Individual contributor performance additionally requires an unambiguous contributor.",
         ),
         (
             "VO Redos",
-            "VO Redos are tracked visibly as operational QC items and are not assigned to or counted against a video editor unless the same comment contains a separate, explicit video-editing execution error.",
+            "VO Redos are tracked visibly as operational QC items and are not assigned to or counted against a video editor. If the same source comment also contains independent video-editing instructions, those remain separate video-editing errors.",
+        ),
+        (
+            "Reply counting",
+            "A reply that only continues the same parent correction is not counted as a second error. The reply remains visible in Comment Coverage and is linked to the parent thread.",
         ),
         (
             "Comment preservation",
-            "Every displayed source comment is copied verbatim from Frame.io. Comment Coverage shows every included intermediate-version comment, including comments classified as no error.",
+            "Every displayed source comment is copied verbatim from Frame.io. Comment Coverage shows every included QC comment, including comments classified as no error or consolidated into a parent thread.",
         ),
         (
             "Manual review workflow",
-            "Use Review Overrides to approve, change, or remove AI-classified errors. Upload the reviewed workbook back into the Streamlit app to regenerate final reports.",
+            "Use Review Overrides to approve, change, or remove AI-classified errors. Ambiguous editorial/scope exclusions are surfaced in Needs Review rather than silently finalized as non-performance.",
         ),
     ])
 
@@ -673,13 +677,17 @@ def _extraction_audit_sheet(wb, bundles):
         "Resolution Method",
         "Asset Name",
         "Total Versions",
-        "First Version (Excluded)",
-        "Eligible Intermediate Versions",
-        "Checked Intermediate Versions",
-        "Failed Intermediate Versions",
+        "First Version (Always Excluded)",
+        "Versions After v1 to Check",
+        "Checked Versions After v1",
+        "Included QC Versions",
+        "Failed Versions After v1",
         "Checked Version Names",
+        "Included Version Names",
         "Failed Version Names",
-        "Latest/Final Version (Excluded)",
+        "Latest Version",
+        "Latest Included?",
+        "Final/No-Comment Latest (Excluded)",
         "Extracted Comments/Replies",
         "Zero-Error Verified?",
         "Extraction Status",
@@ -701,9 +709,13 @@ def _extraction_audit_sheet(wb, bundles):
             audit.get("first_version", ""),
             audit.get("eligible_versions", 0),
             audit.get("checked_versions", 0),
+            audit.get("included_versions", 0),
             audit.get("failed_versions", 0),
             "; ".join(audit.get("checked_version_names") or []),
+            "; ".join(audit.get("included_version_names") or []),
             "; ".join(audit.get("failed_version_names") or []),
+            audit.get("latest_version", ""),
+            "Yes" if audit.get("latest_version_included") else "No",
             audit.get("final_version", ""),
             audit.get("comment_count", 0),
             "Yes" if audit.get("zero_error_verified") else "No",
@@ -775,12 +787,26 @@ def _needs_review_sheet(wb, bundles, error_rows, team):
                 _make_link(ws.cell(ws.max_row, 6), str(project.get("frameio_review_link") or ""))
 
     for row in error_rows:
-        if row.get("team") not in {team, "review"}:
+        row_team = row.get("team")
+        operational_review = (
+            team == "video_editing"
+            and row_team == "operational"
+            and bool(row.get("needs_review"))
+        )
+        if row_team not in {team, "review"} and not operational_review:
             continue
         if row.get("needs_review") or not row.get("performance_eligible", True):
+            if operational_review:
+                review_type = "Operational Scope Review"
+            else:
+                review_type = (
+                    "Classification Review"
+                    if row.get("needs_review") and row.get("performance_eligible", False)
+                    else "Classification / Attribution"
+                )
             ws.append([
                 row.get("item_name") or row.get("article_id"),
-                "Classification Review" if row.get("needs_review") and row.get("performance_eligible", False) else "Classification / Attribution",
+                review_type,
                 row.get("classification_reason") or "Needs manual verification",
                 row.get("version_label") or (f"v{row.get('version_number')}" if row.get("version_number") else ""),
                 row.get("timecode", ""),
@@ -1096,20 +1122,21 @@ def _scope_reconciliation_sheet(wb, projects, bundles, error_rows):
         for row in error_rows
         if row.get("team") == "video_editing"
     )
-    review_items = sum(
-        1 for row in error_rows
-        if row.get("needs_review") or row.get("team") == "review"
+    review_items = (
+        wb["Needs Review"].max_row - 1
+        if "Needs Review" in wb.sheetnames
+        else 0
     )
 
     rows = [
         ("Monthly Monday projects", len(projects), "Complete selected release-month population."),
-        ("Verified QC-stage articles", len(verified_articles), "Articles whose recognized proof stages were checked without unresolved stage/extraction gaps."),
+        ("Verified extraction articles", len(verified_articles), "Articles for which every Frame.io version after v1 required by the current rule was checked successfully."),
         ("Individual-editor eligible articles", len(contributor_eligible), "Verified articles with an unambiguous video editor and no blocking attribution issue."),
         ("Video-editor errors", editor_errors, "Errors attributed to video editing; this is the total used by editor performance summaries."),
         ("VO Redos (non-editor)", vo_redos, "Operational VO redo requests shown separately and excluded from editor performance."),
         ("Total QC items", editor_errors + vo_redos, "Video-editor errors plus operational VO Redos."),
         ("Common Error Patterns total", pattern_total, "All video-editor error patterns are listed, including one-off patterns, so this reconciles to Video-editor errors."),
-        ("Review items", review_items, "Rows requiring semantic or attribution review; not every review item excludes its article from performance."),
+        ("Review items", review_items, "Exact row count from the Video Needs Review sheet."),
     ]
     for row in rows:
         ws.append(row)
@@ -1121,7 +1148,6 @@ def _scope_reconciliation_sheet(wb, projects, bundles, error_rows):
         for cell in row:
             cell.alignment = Alignment(wrap_text=True, vertical="top")
     return ws
-
 
 def _stage_breakdown_sheet(wb, error_rows):
     ws = wb.create_sheet("Frame.io Version Breakdown")
@@ -1151,8 +1177,11 @@ def _comment_coverage_sheet(wb, bundles, classifications):
         for comment in bundle.get("comments") or []:
             result = by_comment.get(str(comment.get("comment_id") or ""), {})
             issues = result.get("issues") or []
+            dedup_parent = str(result.get("_deduplicated_to_parent") or "")
             if result.get("_classification_error"):
                 outcome = "Needs Review - classification failure"
+            elif dedup_parent and not issues:
+                outcome = f"Thread continuation - counted with parent comment {dedup_parent}"
             elif not issues:
                 outcome = "No counted QC error"
             else:
@@ -1160,6 +1189,8 @@ def _comment_coverage_sheet(wb, bundles, classifications):
                     f"{issue.get('team')}: {issue.get('category')} x{int(issue.get('error_count') or 0)}"
                     for issue in issues
                 )
+                if dedup_parent:
+                    outcome += f"; duplicate issue consolidated with parent comment {dedup_parent}"
             ws.append([
                 project.get("item_name") or comment.get("article_id"),
                 comment.get("version_label") or (f"v{comment.get('version_number')}" if comment.get("version_number") else ""),
@@ -1205,7 +1236,7 @@ def _excluded_source_sheet(wb, bundles):
                 project.get("item_name") or project.get("article_id"),
                 version.get("version_label") or (f"v{version.get('version_number')}" if version.get("version_number") else ""),
                 version.get("name") or "",
-                version.get("qc_check_note") or "Excluded by approved first/latest version rule.",
+                version.get("qc_check_note") or "Excluded by the current Frame.io version rule.",
             ])
     return ws
 
@@ -1246,7 +1277,6 @@ def build_report(
     if team == "video_editing":
         _pattern_sheet(wb, error_rows)
         _stage_breakdown_sheet(wb, error_rows)
-        _scope_reconciliation_sheet(wb, projects, bundles, error_rows)
 
     _comment_coverage_sheet(wb, bundles, classifications or [])
     _non_performance_items_sheet(wb, error_rows)
@@ -1254,6 +1284,8 @@ def build_report(
     _analysis_sheet(wb, projects, bundles, error_rows, team)
     _extraction_audit_sheet(wb, bundles)
     _needs_review_sheet(wb, bundles, error_rows, team)
+    if team == "video_editing":
+        _scope_reconciliation_sheet(wb, projects, bundles, error_rows)
     _review_overrides_sheet(wb, error_rows, team)
     _error_detail_sheet(wb, error_rows, team)
     _raw_comments_sheet(wb, bundles)
